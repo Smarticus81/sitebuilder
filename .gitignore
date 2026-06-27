@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# Local datastore + generated artifacts
+data/
+storefront.db
+storefront.db-*
+demos-out/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,22 @@
+{
+  "name": "@storefront/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@storefront/core": "workspace:*",
+    "@storefront/db": "workspace:*",
+    "@storefront/email": "workspace:*",
+    "@storefront/llm": "workspace:*",
+    "@storefront/places": "workspace:*",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21"
+  }
+}

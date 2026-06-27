@@ -1,0 +1,340 @@
+import Database from 'better-sqlite3';
+import { readFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export * from './types.js';
+import type {
+  Lead,
+  LeadStatus,
+  Demo,
+  Message,
+  MessageStatus,
+  Suppression,
+  ConfigRow,
+  EventRow,
+} from './types.js';
+
+export type DB = Database.Database;
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+/** Resolve a DATABASE_URL like `sqlite:./data/storefront.db` to a file path. */
+export function sqlitePathFromUrl(url: string | undefined): string {
+  const raw = url ?? 'sqlite:./data/storefront.db';
+  if (raw.startsWith('postgres://') || raw.startsWith('postgresql://')) {
+    throw new Error(
+      'Postgres DATABASE_URL detected, but Phase 1 ships the SQLite driver only. ' +
+        'Set DATABASE_URL=sqlite:./data/storefront.db for the local run.',
+    );
+  }
+  const path = raw.replace(/^sqlite:/, '');
+  if (path === ':memory:') return path;
+  return resolve(process.cwd(), path);
+}
+
+let singleton: DB | null = null;
+
+export function openDb(url = process.env.DATABASE_URL): DB {
+  const path = sqlitePathFromUrl(url);
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  return db;
+}
+
+/** Process-wide shared connection. */
+export function getDb(): DB {
+  if (!singleton) {
+    singleton = openDb();
+    migrate(singleton);
+  }
+  return singleton;
+}
+
+export function migrate(db: DB): void {
+  const schema = readFileSync(resolve(here, 'schema.sql'), 'utf8');
+  db.exec(schema);
+}
+
+/** Drop all data (used by `pnpm reset`). */
+export function resetDb(db: DB): void {
+  db.exec(`
+    DELETE FROM events;
+    DELETE FROM messages;
+    DELETE FROM demos;
+    DELETE FROM suppression;
+    DELETE FROM leads;
+    DELETE FROM config;
+    DELETE FROM sqlite_sequence;
+  `);
+}
+
+// ── Events (audit log) ──────────────────────────────────────────────────────
+
+export function logEvent(
+  db: DB,
+  type: string,
+  leadId: number | null,
+  payload?: unknown,
+): void {
+  db.prepare(
+    `INSERT INTO events (lead_id, type, payload_json) VALUES (?, ?, ?)`,
+  ).run(leadId, type, payload === undefined ? null : JSON.stringify(payload));
+}
+
+export function listEvents(db: DB, leadId?: number): EventRow[] {
+  if (leadId === undefined) {
+    return db
+      .prepare(`SELECT * FROM events ORDER BY id DESC LIMIT 500`)
+      .all() as EventRow[];
+  }
+  return db
+    .prepare(`SELECT * FROM events WHERE lead_id = ? ORDER BY id DESC`)
+    .all(leadId) as EventRow[];
+}
+
+// ── Leads ───────────────────────────────────────────────────────────────────
+
+export interface NewLead {
+  place_id: string;
+  name: string;
+  category?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  website_url?: string | null;
+  rating?: number | null;
+  review_count?: number | null;
+  places_json?: string | null;
+}
+
+/** Insert if the place_id is new; returns the row either way. */
+export function upsertLead(db: DB, lead: NewLead): { row: Lead; inserted: boolean } {
+  const existing = db
+    .prepare(`SELECT * FROM leads WHERE place_id = ?`)
+    .get(lead.place_id) as Lead | undefined;
+  if (existing) return { row: existing, inserted: false };
+
+  const info = db
+    .prepare(
+      `INSERT INTO leads (place_id, name, category, address, phone, lat, lng,
+        website_url, rating, review_count, places_json, status)
+       VALUES (@place_id, @name, @category, @address, @phone, @lat, @lng,
+        @website_url, @rating, @review_count, @places_json, 'discovered')`,
+    )
+    .run({
+      place_id: lead.place_id,
+      name: lead.name,
+      category: lead.category ?? null,
+      address: lead.address ?? null,
+      phone: lead.phone ?? null,
+      lat: lead.lat ?? null,
+      lng: lead.lng ?? null,
+      website_url: lead.website_url ?? null,
+      rating: lead.rating ?? null,
+      review_count: lead.review_count ?? null,
+      places_json: lead.places_json ?? null,
+    });
+  const row = getLead(db, Number(info.lastInsertRowid))!;
+  logEvent(db, 'lead.discovered', row.id, { name: row.name, place_id: row.place_id });
+  return { row, inserted: true };
+}
+
+export function getLead(db: DB, id: number): Lead | undefined {
+  return db.prepare(`SELECT * FROM leads WHERE id = ?`).get(id) as Lead | undefined;
+}
+
+export function listLeads(db: DB, status?: LeadStatus): Lead[] {
+  if (status) {
+    return db
+      .prepare(`SELECT * FROM leads WHERE status = ? ORDER BY score DESC, id ASC`)
+      .all(status) as Lead[];
+  }
+  return db
+    .prepare(`SELECT * FROM leads ORDER BY score DESC, id ASC`)
+    .all() as Lead[];
+}
+
+export function updateLead(db: DB, id: number, patch: Partial<Lead>): Lead {
+  const keys = Object.keys(patch).filter((k) => k !== 'id');
+  if (keys.length) {
+    const setClause = keys.map((k) => `${k} = @${k}`).join(', ');
+    db.prepare(
+      `UPDATE leads SET ${setClause}, updated_at = datetime('now') WHERE id = @id`,
+    ).run({ ...patch, id });
+  }
+  return getLead(db, id)!;
+}
+
+/** Update status + write an audit event in one shot. */
+export function setLeadStatus(
+  db: DB,
+  id: number,
+  status: LeadStatus,
+  extra?: Partial<Lead>,
+): Lead {
+  const before = getLead(db, id);
+  const row = updateLead(db, id, { ...extra, status });
+  logEvent(db, 'lead.status', id, { from: before?.status, to: status });
+  return row;
+}
+
+// ── Demos ───────────────────────────────────────────────────────────────────
+
+export function insertDemo(
+  db: DB,
+  demo: Omit<Demo, 'id' | 'created_at'>,
+): Demo {
+  const info = db
+    .prepare(
+      `INSERT INTO demos (lead_id, template, copy_json, assets_json, subdomain,
+        demo_url, published, unpublish_at)
+       VALUES (@lead_id, @template, @copy_json, @assets_json, @subdomain,
+        @demo_url, @published, @unpublish_at)`,
+    )
+    .run(demo);
+  return getDemo(db, Number(info.lastInsertRowid))!;
+}
+
+export function getDemo(db: DB, id: number): Demo | undefined {
+  return db.prepare(`SELECT * FROM demos WHERE id = ?`).get(id) as Demo | undefined;
+}
+
+export function getDemoByLead(db: DB, leadId: number): Demo | undefined {
+  return db
+    .prepare(`SELECT * FROM demos WHERE lead_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(leadId) as Demo | undefined;
+}
+
+export function updateDemo(db: DB, id: number, patch: Partial<Demo>): Demo {
+  const keys = Object.keys(patch).filter((k) => k !== 'id');
+  if (keys.length) {
+    const setClause = keys.map((k) => `${k} = @${k}`).join(', ');
+    db.prepare(`UPDATE demos SET ${setClause} WHERE id = @id`).run({ ...patch, id });
+  }
+  return getDemo(db, id)!;
+}
+
+// ── Messages ─────────────────────────────────────────────────────────────────
+
+export function insertMessage(
+  db: DB,
+  msg: Omit<Message, 'id' | 'created_at' | 'sent_at' | 'approved_by'> &
+    Partial<Pick<Message, 'sent_at' | 'approved_by'>>,
+): Message {
+  const info = db
+    .prepare(
+      `INSERT INTO messages (lead_id, channel, subject, body, status, sent_at, approved_by)
+       VALUES (@lead_id, @channel, @subject, @body, @status, @sent_at, @approved_by)`,
+    )
+    .run({
+      sent_at: null,
+      approved_by: null,
+      ...msg,
+    });
+  const row = getMessage(db, Number(info.lastInsertRowid))!;
+  logEvent(db, 'message.draft', row.lead_id, { message_id: row.id, subject: row.subject });
+  return row;
+}
+
+export function getMessage(db: DB, id: number): Message | undefined {
+  return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as
+    | Message
+    | undefined;
+}
+
+export function getMessageByLead(db: DB, leadId: number): Message | undefined {
+  return db
+    .prepare(`SELECT * FROM messages WHERE lead_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(leadId) as Message | undefined;
+}
+
+export function updateMessageStatus(
+  db: DB,
+  id: number,
+  status: MessageStatus,
+  extra?: Partial<Message>,
+): Message {
+  const keys = ['status', ...Object.keys(extra ?? {})];
+  const setClause = keys.map((k) => `${k} = @${k}`).join(', ');
+  db.prepare(`UPDATE messages SET ${setClause} WHERE id = @id`).run({
+    status,
+    ...extra,
+    id,
+  });
+  return getMessage(db, id)!;
+}
+
+/** Count of emails actually sent today (UTC date). Drives the daily cap. */
+export function countSentToday(db: DB): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM messages
+       WHERE status = 'sent' AND date(sent_at) = date('now')`,
+    )
+    .get() as { n: number };
+  return row.n;
+}
+
+// ── Suppression ──────────────────────────────────────────────────────────────
+
+export function isSuppressed(db: DB, email: string): boolean {
+  const row = db
+    .prepare(`SELECT email FROM suppression WHERE email = ?`)
+    .get(email.toLowerCase().trim());
+  return !!row;
+}
+
+export function addSuppression(db: DB, email: string, reason: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO suppression (email, reason) VALUES (?, ?)`,
+  ).run(email.toLowerCase().trim(), reason);
+  logEvent(db, 'suppression.add', null, { email, reason });
+}
+
+export function listSuppression(db: DB): Suppression[] {
+  return db
+    .prepare(`SELECT * FROM suppression ORDER BY created_at DESC`)
+    .all() as Suppression[];
+}
+
+// ── Config ───────────────────────────────────────────────────────────────────
+
+export function getConfigRow(db: DB): ConfigRow | undefined {
+  return db.prepare(`SELECT * FROM config WHERE id = 1`).get() as
+    | ConfigRow
+    | undefined;
+}
+
+export function upsertConfig(db: DB, cfg: Partial<Omit<ConfigRow, 'id'>>): ConfigRow {
+  const existing = getConfigRow(db);
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO config (id, sender_name, sender_business, mailing_address,
+        reply_to, from_domain, daily_send_cap, followup_days, demo_ttl_days)
+       VALUES (1, @sender_name, @sender_business, @mailing_address, @reply_to,
+        @from_domain, @daily_send_cap, @followup_days, @demo_ttl_days)`,
+    ).run({
+      sender_name: cfg.sender_name ?? null,
+      sender_business: cfg.sender_business ?? null,
+      mailing_address: cfg.mailing_address ?? null,
+      reply_to: cfg.reply_to ?? null,
+      from_domain: cfg.from_domain ?? null,
+      daily_send_cap: cfg.daily_send_cap ?? 15,
+      followup_days: cfg.followup_days ?? 4,
+      demo_ttl_days: cfg.demo_ttl_days ?? 14,
+    });
+  } else {
+    const merged = { ...existing, ...cfg };
+    db.prepare(
+      `UPDATE config SET sender_name=@sender_name, sender_business=@sender_business,
+        mailing_address=@mailing_address, reply_to=@reply_to, from_domain=@from_domain,
+        daily_send_cap=@daily_send_cap, followup_days=@followup_days,
+        demo_ttl_days=@demo_ttl_days, updated_at=datetime('now') WHERE id = 1`,
+    ).run(merged);
+  }
+  return getConfigRow(db)!;
+}

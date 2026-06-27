@@ -1,0 +1,33 @@
+{
+  "name": "storefront",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prospect": "tsx apps/worker/src/cli.ts prospect",
+    "qualify": "tsx apps/worker/src/cli.ts qualify",
+    "build:demos": "tsx apps/worker/src/cli.ts build",
+    "draft": "tsx apps/worker/src/cli.ts draft",
+    "send": "tsx apps/worker/src/cli.ts send",
+    "status": "tsx apps/worker/src/cli.ts status",
+    "migrate": "tsx apps/worker/src/cli.ts migrate",
+    "reset": "tsx apps/worker/src/cli.ts reset",
+    "acceptance": "tsx apps/worker/src/acceptance.ts",
+    "server": "tsx apps/worker/src/server.ts",
+    "dashboard": "pnpm --filter @storefront/dashboard dev",
+    "dev": "pnpm -r --parallel --filter @storefront/worker --filter @storefront/dashboard dev",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit",
+    "typecheck:ui": "pnpm --filter @storefront/dashboard exec tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
+  }
+}

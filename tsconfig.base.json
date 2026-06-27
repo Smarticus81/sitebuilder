@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": false,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@storefront/db": ["packages/db/src/index.ts"],
+      "@storefront/places": ["packages/places/src/index.ts"],
+      "@storefront/llm": ["packages/llm/src/index.ts"],
+      "@storefront/email": ["packages/email/src/index.ts"],
+      "@storefront/core": ["packages/core/src/index.ts"],
+      "@storefront/core/*": ["packages/core/src/*"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/worker/src/**/*.ts"]
+}

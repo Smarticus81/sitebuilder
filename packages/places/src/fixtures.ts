@@ -1,0 +1,207 @@
+import type { PlaceResult } from './types.js';
+
+// Deterministic fixture set: "hair salons in Fort Worth, TX".
+// Designed to exercise every qualifier branch:
+//   • 3 with bad/outdated sites  → segment 'bad'  (Phase 1 target)
+//   • 2 with no site at all      → segment 'none'
+//   • 1 social-only (facebook)   → treated as 'none'
+//   • 1 with a genuinely good site → DROPPED by qualifier
+//   • 1 closed                    → skipped by prospector
+export const FORT_WORTH_SALONS: PlaceResult[] = [
+  {
+    placeId: 'mock_clip_joint',
+    name: "The Clip Joint Barber & Salon",
+    category: 'hair_salon',
+    address: '2914 W 7th St, Fort Worth, TX 76107',
+    phone: '(817) 555-0142',
+    lat: 32.7521,
+    lng: -97.3597,
+    website: 'http://www.clipjointfw.com', // bad: http, no viewport, stale
+    rating: 4.7,
+    reviewCount: 218,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_clip_1', 'photo_clip_2', 'photo_clip_3'],
+    topReviews: [
+      'Best fade in Fort Worth, hands down. Marcus always takes his time.',
+      'Old-school barbershop feel with hot towel shaves. Been coming for years.',
+      'Walk-ins welcome and the wait is never long. Great with kids too.',
+    ],
+    hours: ['Mon–Fri 9–7', 'Sat 8–5', 'Sun closed'],
+  },
+  {
+    placeId: 'mock_shear_elegance',
+    name: 'Shear Elegance Hair Studio',
+    category: 'hair_salon',
+    address: '5124 Camp Bowie Blvd, Fort Worth, TX 76107',
+    phone: '(817) 555-0188',
+    lat: 32.7283,
+    lng: -97.4012,
+    website: 'http://shearelegancefw.weebly.com', // bad: outdated builder, slow
+    rating: 4.5,
+    reviewCount: 96,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_shear_1', 'photo_shear_2'],
+    topReviews: [
+      'Tina did my balayage and it came out gorgeous. So many compliments!',
+      'Relaxing atmosphere and they always get my color exactly right.',
+      'A little hard to book online but worth it once you are in the chair.',
+    ],
+    hours: ['Tue–Sat 10–6', 'Sun–Mon closed'],
+  },
+  {
+    placeId: 'mock_mane_attraction',
+    name: 'Mane Attraction Salon',
+    category: 'hair_salon',
+    address: '6333 Camp Bowie Blvd, Fort Worth, TX 76116',
+    phone: '(817) 555-0205',
+    lat: 32.7141,
+    lng: -97.4327,
+    website: 'http://maneattractionfortworth.com', // bad: stale copyright, no https
+    rating: 4.8,
+    reviewCount: 154,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_mane_1', 'photo_mane_2', 'photo_mane_3', 'photo_mane_4'],
+    topReviews: [
+      'Best highlights I have had in years. Ask for Brittany!',
+      'Friendly staff, clean space, and they never rush you out.',
+      'They fixed a botched cut from another salon. Lifesavers.',
+    ],
+    hours: ['Mon–Sat 9–7', 'Sun 11–4'],
+  },
+  {
+    placeId: 'mock_lather_fade',
+    name: 'Lather & Fade Barber Co.',
+    category: 'barber_shop',
+    address: '2700 W Berry St, Fort Worth, TX 76109',
+    phone: '(817) 555-0410',
+    lat: 32.7102,
+    lng: -97.3631,
+    website: 'http://www.latherandfadefw.com', // bad: http, stale, slow
+    rating: 4.6,
+    reviewCount: 188,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_lather_1', 'photo_lather_2', 'photo_lather_3'],
+    topReviews: [
+      'Sharp cuts near TCU, always a good vibe and great conversation.',
+      'My son loves coming here, they are so patient with kids.',
+      'Straight razor neck shave is the best part of my month.',
+    ],
+    hours: ['Mon–Fri 9–7', 'Sat 9–4', 'Sun closed'],
+  },
+  {
+    placeId: 'mock_bombshell',
+    name: 'Bombshell Beauty Bar',
+    category: 'hair_salon',
+    address: '1245 8th Ave, Fort Worth, TX 76104',
+    phone: '(817) 555-0477',
+    lat: 32.7349,
+    lng: -97.3349,
+    website: 'http://bombshellbeautyfw.com', // bad: stale copyright, no https/viewport
+    rating: 4.7,
+    reviewCount: 131,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_bomb_1', 'photo_bomb_2'],
+    topReviews: [
+      'Blowouts here last for days. Obsessed with this place.',
+      'They nailed my wedding hair and makeup, cried happy tears.',
+      'Cute hospital-district spot with super talented stylists.',
+    ],
+    hours: ['Tue–Sat 9–6', 'Sun–Mon closed'],
+  },
+  {
+    placeId: 'mock_fades_and_blades',
+    name: 'Fades & Blades',
+    category: 'barber_shop',
+    address: '1201 E Belknap St, Fort Worth, TX 76102',
+    phone: '(817) 555-0233',
+    lat: 32.7601,
+    lng: -97.3201,
+    website: null, // no site → segment 'none'
+    rating: 4.9,
+    reviewCount: 312,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_fades_1', 'photo_fades_2'],
+    topReviews: [
+      'Cleanest lineup in the city. These guys are artists.',
+      'Great vibe, good music, and they remember your name.',
+      'Booked solid for a reason. Worth the wait every time.',
+    ],
+    hours: ['Tue–Sat 10–8', 'Sun–Mon closed'],
+  },
+  {
+    placeId: 'mock_curl_up_dye',
+    name: 'Curl Up & Dye',
+    category: 'hair_salon',
+    address: '3400 Hulen St, Fort Worth, TX 76107',
+    phone: '(817) 555-0299',
+    lat: 32.7256,
+    lng: -97.4099,
+    website: null, // no site → segment 'none'
+    rating: 4.4,
+    reviewCount: 71,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_curl_1'],
+    topReviews: [
+      'Cute spot with a great name and even better stylists.',
+      'My go-to for a quick trim and they take card now.',
+      'Reasonable prices for the quality you get.',
+    ],
+    hours: ['Mon–Fri 9–6', 'Sat 9–3', 'Sun closed'],
+  },
+  {
+    placeId: 'mock_social_cuts',
+    name: 'Social Cuts Studio',
+    category: 'hair_salon',
+    address: '817 Magnolia Ave, Fort Worth, TX 76104',
+    phone: '(817) 555-0311',
+    lat: 32.7405,
+    lng: -97.3287,
+    website: 'https://www.facebook.com/socialcutsfw', // social-only → 'none'
+    rating: 4.6,
+    reviewCount: 58,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_social_1', 'photo_social_2'],
+    topReviews: [
+      'Trendy cuts and they keep up with all the latest styles.',
+      'Found them on Instagram and so glad I booked.',
+      'Hip little studio on Magnolia. Great for a restyle.',
+    ],
+    hours: ['Wed–Sun 11–7', 'Mon–Tue closed'],
+  },
+  {
+    placeId: 'mock_polished_modern',
+    name: 'Polished Modern Salon',
+    category: 'hair_salon',
+    address: '420 Throckmorton St, Fort Worth, TX 76102',
+    phone: '(817) 555-0355',
+    lat: 32.7512,
+    lng: -97.3318,
+    website: 'https://polishedmodern.com', // GOOD site → qualifier drops this lead
+    rating: 4.7,
+    reviewCount: 140,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_polished_1'],
+    topReviews: [
+      'Beautiful modern salon with online booking that just works.',
+      'Their website made it so easy to pick a stylist and time.',
+      'Top-tier from booking to blowout.',
+    ],
+    hours: ['Mon–Sat 9–8', 'Sun 10–5'],
+  },
+  {
+    placeId: 'mock_closed_cuts',
+    name: 'Yesterday Hair Co (Closed)',
+    category: 'hair_salon',
+    address: '100 Old Town Rd, Fort Worth, TX 76102',
+    phone: null,
+    lat: 32.75,
+    lng: -97.33,
+    website: null,
+    rating: 4.0,
+    reviewCount: 12,
+    businessStatus: 'CLOSED_PERMANENTLY', // skipped by prospector
+    photoRefs: [],
+    topReviews: [],
+    hours: [],
+  },
+];
