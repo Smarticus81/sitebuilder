@@ -1,11 +1,124 @@
 @import "tailwindcss";
 
-:root {
-  color-scheme: light;
+/* ------------------------------------------------------------------ *
+ * Storefront — dark, premium, neon-teal design system
+ * ------------------------------------------------------------------ */
+@theme {
+  --color-ink: #06070a;
+  --color-ink-2: #0a0c11;
+  --color-surface: #0e1017;
+  --color-surface-2: #141722;
+  --color-line: #23283a;
+  --color-neon: #2dd4bf;
+  --color-neon-bright: #5eead4;
+  --color-neon-dim: #0f766e;
+  --color-violet: #7c6cff;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
-  background: #f6f5f2;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #15151b;
+  background: var(--color-ink);
+  font-family: var(--font-sans);
+  color: #e6e8ef;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.3);
+  color: #fff;
+}
+
+/* Thin neon-tinted scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #0a0c11; }
+::-webkit-scrollbar-thumb {
+  background: #1c2130;
+  border-radius: 6px;
+  border: 2px solid #0a0c11;
+}
+::-webkit-scrollbar-thumb:hover { background: #2a3145; }
+
+/* ------------------------------------------------------------------ *
+ * Reusable effect utilities
+ * ------------------------------------------------------------------ */
+
+/* Glass panel */
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* Neon text gradient */
+.text-gradient {
+  background: linear-gradient(120deg, #5eead4 0%, #2dd4bf 40%, #7c6cff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Soft neon glow behind an element */
+.neon-glow {
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25),
+    0 0 24px -4px rgba(45, 212, 191, 0.4),
+    0 0 64px -12px rgba(45, 212, 191, 0.25);
+}
+
+.neon-ring {
+  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.35), 0 0 20px -6px rgba(94, 234, 212, 0.5);
+}
+
+/* Animated conic border for feature cards */
+.card-hover {
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.4s, box-shadow 0.4s;
+}
+.card-hover:hover {
+  transform: translateY(-6px);
+  border-color: rgba(45, 212, 191, 0.5);
+  box-shadow: 0 20px 60px -20px rgba(45, 212, 191, 0.35);
+}
+
+/* Grid backdrop */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+/* Marquee for the logo/trust strip */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.animate-marquee { animation: marquee 28s linear infinite; }
+
+/* Slow floating pulse for ambient orbs */
+@keyframes floaty {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -18px, 0); }
+}
+.animate-floaty { animation: floaty 9s ease-in-out infinite; }
+
+/* Shimmer sweep */
+@keyframes shimmer {
+  100% { transform: translateX(200%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .animate-marquee, .animate-floaty { animation: none; }
 }
