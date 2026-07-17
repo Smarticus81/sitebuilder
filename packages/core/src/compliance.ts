@@ -78,19 +78,22 @@ export interface SendGate {
  *  • message is human-approved
  *  • daily cap not exceeded
  *  • message body passes CAN-SPAM validation
+ *
+ * NOTE: async is purely mechanical (the DB driver is async for Postgres
+ * support) — the checks, their order, and their semantics are unchanged.
  */
-export function checkSendGate(
+export async function checkSendGate(
   db: DB,
   config: StorefrontConfig,
   lead: Lead,
   message: Message,
-): SendGate {
+): Promise<SendGate> {
   const reasons: string[] = [];
   const cap = config.dailySendCap;
-  const sentToday = countSentToday(db);
+  const sentToday = await countSentToday(db);
 
   if (!lead.contact_email) reasons.push('Lead has no contact email');
-  if (lead.contact_email && isSuppressed(db, lead.contact_email))
+  if (lead.contact_email && (await isSuppressed(db, lead.contact_email)))
     reasons.push('Recipient is on the suppression list');
   if (message.status !== 'approved')
     reasons.push(`Message is not approved (status: ${message.status})`);

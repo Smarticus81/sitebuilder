@@ -33,7 +33,11 @@ import type { StorefrontConfig } from './config.js';
  * Draft a call script for a phone-first lead. Channel `call_script` is for the
  * operator's eyes only — the send path refuses to email it.
  */
-export function draftCallScript(db: DB, config: StorefrontConfig, lead: Lead): Message {
+export async function draftCallScript(
+  db: DB,
+  config: StorefrontConfig,
+  lead: Lead,
+): Promise<Message> {
   if (!lead.phone) throw new Error(`Lead ${lead.id} (${lead.name}) has no phone number`);
   const demoLine = lead.demo_url
     ? `I actually put together a free preview of what a modern site for ${lead.name} could look like — I can text you the link right now if you'd like.`
@@ -60,14 +64,14 @@ export function draftCallScript(db: DB, config: StorefrontConfig, lead: Lead): M
     `Rules: never leave robo-voicemails; call only 9am–8pm local; one polite follow-up max.`,
   ].join('\n');
 
-  const message = insertMessage(db, {
+  const message = await insertMessage(db, {
     lead_id: lead.id,
     channel: 'call_script',
     subject: `Call script — ${lead.name}`,
     body,
     status: 'draft',
   });
-  logEvent(db, 'callscript.drafted', lead.id, { message_id: message.id });
+  await logEvent(db, 'callscript.drafted', lead.id, { message_id: message.id });
   return message;
 }
 
@@ -76,14 +80,18 @@ export function draftCallScript(db: DB, config: StorefrontConfig, lead: Lead): M
 export const SMS_OPT_OUT_SUFFIX = 'Reply STOP to opt out.';
 
 /** Draft the "text the demo" SMS. Requires a built demo and a phone number. */
-export function draftDemoSms(db: DB, config: StorefrontConfig, lead: Lead): SmsMessage {
+export async function draftDemoSms(
+  db: DB,
+  config: StorefrontConfig,
+  lead: Lead,
+): Promise<SmsMessage> {
   if (!lead.phone) throw new Error(`Lead ${lead.id} has no phone number`);
   if (!lead.demo_url) throw new Error(`Lead ${lead.id} has no demo — build it first (Gate A)`);
   const body =
     `Hi, it's ${config.senderName} from ${config.senderBusiness} — as discussed, here's the ` +
     `free website preview for ${lead.name}: ${lead.demo_url} ` +
     `No obligation. ${SMS_OPT_OUT_SUFFIX}`;
-  return insertSms(db, { lead_id: lead.id, to_phone: lead.phone, body });
+  return await insertSms(db, { lead_id: lead.id, to_phone: lead.phone, body });
 }
 
 // ── The SMS gate ─────────────────────────────────────────────────────────────
@@ -121,13 +129,13 @@ export function smsPolicy(env: NodeJS.ProcessEnv = process.env): SmsPolicy {
  * Human gate: approving an SMS REQUIRES a documented TCPA basis, typed by the
  * operator (e.g. "spoke on phone 2026-07-16, owner said OK to text").
  */
-export function approveSms(
+export async function approveSms(
   db: DB,
   smsId: number,
   approvedBy: string,
   tcpaBasis: string,
-): SmsMessage {
-  const sms = getSms(db, smsId);
+): Promise<SmsMessage> {
+  const sms = await getSms(db, smsId);
   if (!sms) throw new Error(`SMS ${smsId} not found`);
   if (sms.status !== 'draft') throw new Error(`SMS ${smsId} is ${sms.status}, cannot approve`);
   const basis = tcpaBasis?.trim();
@@ -137,11 +145,11 @@ export function approveSms(
         'business relationship (min 10 chars). SMS cannot be approved without it.',
     );
   }
-  const updated = updateSmsStatus(db, smsId, 'approved', {
+  const updated = await updateSmsStatus(db, smsId, 'approved', {
     approved_by: approvedBy,
     tcpa_basis: basis,
   });
-  logEvent(db, 'sms.approved', sms.lead_id, { sms_id: smsId, approved_by: approvedBy, tcpa_basis: basis });
+  await logEvent(db, 'sms.approved', sms.lead_id, { sms_id: smsId, approved_by: approvedBy, tcpa_basis: basis });
   return updated;
 }
 
@@ -153,18 +161,18 @@ export function approveSms(
  *  • daily SMS cap not exceeded
  *  • inside the allowed local-time window
  */
-export function checkSmsGate(
+export async function checkSmsGate(
   db: DB,
   policy: SmsPolicy,
   sms: SmsMessage,
   now: Date = new Date(),
-): SmsGate {
+): Promise<SmsGate> {
   const reasons: string[] = [];
-  const sentToday = countSmsSentToday(db);
+  const sentToday = await countSmsSentToday(db);
 
   if (sms.status !== 'approved') reasons.push(`SMS is not approved (status: ${sms.status})`);
   if (!sms.tcpa_basis?.trim()) reasons.push('No documented TCPA consent basis recorded');
-  if (isPhoneSuppressed(db, sms.to_phone)) reasons.push('Phone number opted out (STOP)');
+  if (await isPhoneSuppressed(db, sms.to_phone)) reasons.push('Phone number opted out (STOP)');
   if (!sms.body.includes('STOP')) reasons.push('Body is missing STOP opt-out language');
   if (sentToday >= policy.dailyCap) reasons.push(`Daily SMS cap reached (${sentToday}/${policy.dailyCap})`);
 
@@ -197,31 +205,31 @@ export async function sendApprovedSms(
   const dryRun = opts.dryRun ?? false;
   const policy = opts.policy ?? smsPolicy();
 
-  const sms = getSms(db, smsId);
+  const sms = await getSms(db, smsId);
   if (!sms) throw new Error(`SMS ${smsId} not found`);
-  const lead = getLead(db, sms.lead_id);
+  const lead = await getLead(db, sms.lead_id);
 
-  const gate = checkSmsGate(db, policy, sms, opts.now);
+  const gate = await checkSmsGate(db, policy, sms, opts.now);
   if (!gate.ok) {
-    logEvent(db, 'sms.blocked', sms.lead_id, { sms_id: smsId, reasons: gate.reasons });
+    await logEvent(db, 'sms.blocked', sms.lead_id, { sms_id: smsId, reasons: gate.reasons });
     return { sent: false, gate, dryRun };
   }
   if (dryRun) {
-    logEvent(db, 'sms.dry_run', sms.lead_id, { sms_id: smsId, to: sms.to_phone });
+    await logEvent(db, 'sms.dry_run', sms.lead_id, { sms_id: smsId, to: sms.to_phone });
     return { sent: false, gate, dryRun: true };
   }
 
   const result = await provider.send({ to: sms.to_phone, from: '', body: sms.body });
   if (!result.ok) {
-    logEvent(db, 'sms.failed', sms.lead_id, { sms_id: smsId, error: result.error });
+    await logEvent(db, 'sms.failed', sms.lead_id, { sms_id: smsId, error: result.error });
     return { sent: false, gate, error: result.error, dryRun: false };
   }
 
-  updateSmsStatus(db, smsId, 'sent', {
+  await updateSmsStatus(db, smsId, 'sent', {
     sent_at: new Date().toISOString(),
     provider_id: result.id,
   });
-  logEvent(db, 'sms.sent', sms.lead_id, {
+  await logEvent(db, 'sms.sent', sms.lead_id, {
     sms_id: smsId,
     provider: result.provider,
     provider_id: result.id,
@@ -231,13 +239,13 @@ export async function sendApprovedSms(
   if (lead && (lead.status === 'qualified' || lead.status === 'demo_built' || lead.status === 'ready')) {
     // SMS contact advances the pipeline the same way an email send does.
     const { setLeadStatus } = await import('@storefront/db');
-    setLeadStatus(db, lead.id, 'contacted');
+    await setLeadStatus(db, lead.id, 'contacted');
   }
   return { sent: true, gate, providerId: result.id, dryRun: false };
 }
 
 /** Inbound STOP handling (Twilio webhook or manual entry). Permanent. */
-export function recordSmsOptOut(db: DB, phone: string, leadId?: number): void {
-  addPhoneSuppression(db, phone, 'recipient texted STOP');
-  logEvent(db, 'sms.opt_out', leadId ?? null, { phone });
+export async function recordSmsOptOut(db: DB, phone: string, leadId?: number): Promise<void> {
+  await addPhoneSuppression(db, phone, 'recipient texted STOP');
+  await logEvent(db, 'sms.opt_out', leadId ?? null, { phone });
 }

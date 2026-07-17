@@ -90,11 +90,11 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
   };
 
   // A/B: template accent variant — assignment stable per lead, audit-logged.
-  const accentVariant = assignVariant(db, 'template-accent', lead.id);
+  const accentVariant = await assignVariant(db, 'template-accent', lead.id);
   const html = renderTemplate(templateKey, data, { accentVariant });
   const { url, provider } = await deploy.deploy({ slug, subdomain, html });
 
-  const demo = insertDemo(db, {
+  const demo = await insertDemo(db, {
     lead_id: lead.id,
     template: templateKey,
     copy_json: JSON.stringify(copy),
@@ -105,8 +105,8 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
     unpublish_at: addDays(config.demoTtlDays),
   });
 
-  updateLead(db, lead.id, { demo_url: url });
-  logEvent(db, 'demo.built', lead.id, { demo_id: demo.id, url, provider });
-  setLeadStatus(db, lead.id, 'demo_built', { demo_url: url });
+  await updateLead(db, lead.id, { demo_url: url });
+  await logEvent(db, 'demo.built', lead.id, { demo_id: demo.id, url, provider });
+  await setLeadStatus(db, lead.id, 'demo_built', { demo_url: url });
   return demo;
 }

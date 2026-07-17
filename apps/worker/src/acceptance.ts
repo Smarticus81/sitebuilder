@@ -34,20 +34,19 @@ function section(title: string) {
 }
 
 async function run() {
-  const ctx = createContext();
+  const ctx = await createContext();
   console.log('\nStorefront — Phase 1 acceptance (dry-run)');
   console.log(`adapters: ${Object.entries(adapterModes(ctx)).map(([k, v]) => `${k}:${v}`).join('  ')}`);
 
   // Clean slate — DB rows + generated artifacts, so counts are deterministic.
-  resetDb(getDb());
+  await resetDb(getDb());
   for (const dir of ['demos-out', 'proposals-out', resolve('data', 'outbox'), resolve('data', 'sms-outbox')]) {
     const abs = resolve(process.cwd(), dir);
     if (existsSync(abs)) rmSync(abs, { recursive: true, force: true });
   }
   // re-seed config row (reset cleared it)
-  ctx.config; // already loaded; ensure persisted
   const { loadConfig } = await import('@storefront/core');
-  loadConfig(getDb());
+  await loadConfig(getDb());
 
   // ── 1. Discovery ──────────────────────────────────────────────────────────
   section('Stage 1 — Prospector');
@@ -58,9 +57,9 @@ async function run() {
   // ── 2. Qualify ────────────────────────────────────────────────────────────
   section('Stage 2 — Qualifier (Gate A pauses here)');
   const q = await qualifyAll(ctx);
-  const bad = listLeads(ctx.db, 'qualified').filter((l) => l.segment === 'bad');
-  const none = listLeads(ctx.db, 'qualified').filter((l) => l.segment === 'none');
-  const dropped = listLeads(ctx.db, 'lost');
+  const bad = (await listLeads(ctx.db, 'qualified')).filter((l) => l.segment === 'bad');
+  const none = (await listLeads(ctx.db, 'qualified')).filter((l) => l.segment === 'none');
+  const dropped = await listLeads(ctx.db, 'lost');
   check('≥5 bad-website leads (email-reachable)', bad.length >= 5, `${bad.length} bad`);
   check('no-website leads segmented as none', none.length >= 1, `${none.length} none`);
   check('good existing site was DROPPED', dropped.some((l) => l.name.includes('Polished')), `${dropped.length} dropped`);
@@ -87,24 +86,26 @@ async function run() {
   section('Gate A — approve 5 → Stage 3 Builder');
   for (const lead of targets) await buildOne(ctx, lead.id);
   for (const lead of targets) {
-    const demo = getDemoByLead(ctx.db, lead.id)!;
+    const demo = (await getDemoByLead(ctx.db, lead.id))!;
     const slug = slugify(lead.name);
     const file = resolve(process.cwd(), 'demos-out', slug, 'index.html');
     check(`demo built: ${lead.name}`, !!demo?.demo_url && existsSync(file), demo?.demo_url ?? 'no url');
   }
-  const builtLeads = targets.map((t) => freshLead(ctx, t.id));
+  const builtLeads = await Promise.all(targets.map((t) => freshLead(ctx, t.id)));
   check('all 5 leads now demo_built', builtLeads.every((l) => l.status === 'demo_built'));
-  check('demos have a TTL unpublish date', targets.every((t) => !!getDemoByLead(ctx.db, t.id)?.unpublish_at));
+  let ttlOk = true;
+  for (const t of targets) ttlOk = ttlOk && !!(await getDemoByLead(ctx.db, t.id))?.unpublish_at;
+  check('demos have a TTL unpublish date', ttlOk);
 
   // ── 4. Gate B → Draft 5 compliant emails ──────────────────────────────────
   section('Gate B — preview demos → Stage 4 Outreach drafts');
   for (const lead of builtLeads) await draftOne(ctx, lead.id);
   for (const lead of builtLeads) {
-    const msg = getMessageByLead(ctx.db, lead.id)!;
+    const msg = (await getMessageByLead(ctx.db, lead.id))!;
     const body = msg.body ?? '';
     const hasAddr = body.includes(ctx.config.mailingAddress);
     const hasUnsub = body.includes('unsubscribe?email=');
-    const linksDemo = body.includes(getDemoByLead(ctx.db, lead.id)!.demo_url!);
+    const linksDemo = body.includes((await getDemoByLead(ctx.db, lead.id))!.demo_url!);
     check(
       `draft compliant: ${lead.name}`,
       msg.status === 'draft' && hasAddr && hasUnsub && linksDemo && !!msg.subject,
@@ -117,24 +118,26 @@ async function run() {
   // ── 5. Gate C → approve + DRY-RUN send 5 ──────────────────────────────────
   section('Gate C — approve 5 → DRY-RUN send (no mail leaves)');
   // Sending BEFORE approval must be blocked.
-  const preApprove = await sendOneMessage(ctx, getMessageByLead(ctx.db, builtLeads[0]!.id)!.id, { dryRun: true });
+  const preApprove = await sendOneMessage(ctx, (await getMessageByLead(ctx.db, builtLeads[0]!.id))!.id, { dryRun: true });
   check('unapproved draft is blocked at the gate', !preApprove.gate.ok && preApprove.gate.reasons.some((r) => r.includes('not approved')));
 
-  for (const lead of builtLeads) approveLeadMessage(ctx, lead.id, 'acceptance');
+  for (const lead of builtLeads) await approveLeadMessage(ctx, lead.id, 'acceptance');
   let dryOk = 0;
   for (const lead of builtLeads) {
-    const msg = getMessageByLead(ctx.db, lead.id)!;
+    const msg = (await getMessageByLead(ctx.db, lead.id))!;
     const out = await sendOneMessage(ctx, msg.id, { dryRun: true });
     if (out.gate.ok && out.dryRun && !out.sent) dryOk++;
   }
   check('all 5 pass the gate in dry-run, nothing sent', dryOk === 5, `${dryOk}/5`);
-  check('messages remain approved (not sent) after dry-run', builtLeads.every((l) => getMessageByLead(ctx.db, l.id)!.status === 'approved'));
+  let stillApproved = true;
+  for (const l of builtLeads) stillApproved = stillApproved && (await getMessageByLead(ctx.db, l.id))!.status === 'approved';
+  check('messages remain approved (not sent) after dry-run', stillApproved);
 
   // ── 6. Suppression is enforced ────────────────────────────────────────────
   section('Compliance — suppression check');
   const suppressed = builtLeads[0]!;
-  addSuppression(ctx.db, suppressed.contact_email!, 'test: prior unsubscribe');
-  const supOut = await sendOneMessage(ctx, getMessageByLead(ctx.db, suppressed.id)!.id, { dryRun: false });
+  await addSuppression(ctx.db, suppressed.contact_email!, 'test: prior unsubscribe');
+  const supOut = await sendOneMessage(ctx, (await getMessageByLead(ctx.db, suppressed.id))!.id, { dryRun: false });
   check('suppressed recipient is blocked (real send)', !supOut.sent && supOut.gate.reasons.some((r) => r.includes('suppression')));
 
   // ── 7. Daily cap is enforced ──────────────────────────────────────────────
@@ -145,7 +148,7 @@ async function run() {
   let realSent = 0;
   let cappedBlocks = 0;
   for (const lead of remaining) {
-    const msg = getMessageByLead(ctx.db, lead.id)!;
+    const msg = (await getMessageByLead(ctx.db, lead.id))!;
     const out = await sendOneMessage(ctx, msg.id, { dryRun: false });
     if (out.sent) realSent++;
     else if (out.gate.reasons.some((r) => r.includes('cap'))) cappedBlocks++;
@@ -156,7 +159,7 @@ async function run() {
 
   // ── 8. Audit log ──────────────────────────────────────────────────────────
   section('Audit log (events)');
-  const events = listEvents(ctx.db);
+  const events = await listEvents(ctx.db);
   const types = new Set(events.map((e) => e.type));
   for (const t of ['lead.discovered', 'lead.qualified', 'demo.built', 'outreach.drafted', 'send.dry_run', 'send.blocked', 'send.sent']) {
     check(`logged: ${t}`, types.has(t));
@@ -175,14 +178,14 @@ async function run() {
     await prospect(ctx, { category: cat, location: 'Fort Worth, TX' });
   }
   await qualifyAll(ctx);
-  const newBad = listLeads(ctx.db, 'qualified').filter((l) => l.segment === 'bad');
+  const newBad = (await listLeads(ctx.db, 'qualified')).filter((l) => l.segment === 'bad');
   check('one bad-site lead per new industry', newBad.length === 4, `${newBad.length} qualified`);
 
   for (const lead of newBad) await buildOne(ctx, lead.id);
   const { readFileSync } = await import('node:fs');
   for (const [cat, expected] of Object.entries(expectTemplates)) {
     const lead = newBad.find((l) => templateKeyFor(l.category) === expected);
-    const demo = lead ? getDemoByLead(ctx.db, lead.id) : undefined;
+    const demo = lead ? await getDemoByLead(ctx.db, lead.id) : undefined;
     const file = lead ? resolve(process.cwd(), 'demos-out', slugify(lead.name), 'index.html') : '';
     const html = file && existsSync(file) ? readFileSync(file, 'utf8') : '';
     check(
@@ -270,23 +273,25 @@ async function run() {
  * sequence; spacing (≥4 days) is enforced; every step passes checkSendGate;
  * replies and unsubscribes auto-cancel; max 2 follow-ups, ever.
  */
-async function testSequencing(ctx: ReturnType<typeof createContext>) {
+async function testSequencing(ctx: Awaited<ReturnType<typeof createContext>>) {
   const {
     draftFollowupSequence, approveSequence, runSequences, MAX_FOLLOWUPS,
   } = await import('@storefront/core');
   const { listSequenceMessages, getSequence, addSuppression: suppress, setLeadStatus, listEvents } =
     await import('@storefront/db');
+  const fiveDaysAgo =
+    ctx.db.dialect === 'postgres'
+      ? `to_char((now() at time zone 'utc') - interval '5 days', 'YYYY-MM-DD HH24:MI:SS')`
+      : `datetime('now', '-5 days')`;
   const backdate = (leadId: number) =>
-    ctx.db
-      .prepare(`UPDATE messages SET sent_at = datetime('now', '-5 days') WHERE lead_id = ? AND status = 'sent'`)
-      .run(leadId);
+    ctx.db.run(`UPDATE messages SET sent_at = ${fiveDaysAgo} WHERE lead_id = ? AND status = 'sent'`, [leadId]);
 
-  const contacted = listLeads(ctx.db, 'contacted');
+  const contacted = await listLeads(ctx.db, 'contacted');
   check('two contacted leads available for sequencing', contacted.length >= 2, `${contacted.length}`);
   const [l1, l2] = contacted as [Lead, Lead];
 
   // Draft: automation may prepare, never send.
-  const s1 = draftFollowupSequence(ctx.db, ctx.config, l1);
+  const s1 = await draftFollowupSequence(ctx.db, ctx.config, l1);
   check('sequence drafted with exactly MAX_FOLLOWUPS steps', s1.messages.length === MAX_FOLLOWUPS && MAX_FOLLOWUPS === 2);
   check('sequence spacing floor is ≥ 4 days', s1.sequence.spacing_days >= 4);
   check(
@@ -301,11 +306,11 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   check('runner ignores unapproved sequences', r0.examined === 0 && r0.sent === 0);
 
   // Human approves the sequence (Gate: explicit action).
-  approveSequence(ctx.db, s1.sequence.id, 'acceptance-operator');
+  await approveSequence(ctx.db, s1.sequence.id, 'acceptance-operator');
   check(
     'approval marks sequence + steps approved with the approver recorded',
-    getSequence(ctx.db, s1.sequence.id)!.status === 'approved' &&
-      listSequenceMessages(ctx.db, s1.sequence.id).every((m) => m.status === 'approved' && m.approved_by === 'acceptance-operator'),
+    (await getSequence(ctx.db, s1.sequence.id))!.status === 'approved' &&
+      (await listSequenceMessages(ctx.db, s1.sequence.id)).every((m) => m.status === 'approved' && m.approved_by === 'acceptance-operator'),
   );
 
   // Spacing: nothing is due immediately after the initial send.
@@ -313,54 +318,54 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   check('spacing blocks a follow-up sent too soon', r1.sent === 0 && r1.skippedNotDue === 1);
 
   // Backdate the initial send 5 days → step 1 becomes due and passes the gate.
-  backdate(l1.id);
+  await backdate(l1.id);
   const r2 = await runSequences(ctx, {});
   check('due follow-up sends through checkSendGate', r2.sent === 1);
 
   // Reply auto-cancels the rest.
-  setLeadStatus(ctx.db, l1.id, 'replied');
+  await setLeadStatus(ctx.db, l1.id, 'replied');
   const r3 = await runSequences(ctx, {});
-  const s1After = getSequence(ctx.db, s1.sequence.id)!;
+  const s1After = (await getSequence(ctx.db, s1.sequence.id))!;
   check(
     'reply auto-cancels the sequence and voids the unsent step',
     r3.canceled === 1 && s1After.status === 'canceled' &&
-      listSequenceMessages(ctx.db, s1.sequence.id).some((m) => m.status === 'canceled'),
+      (await listSequenceMessages(ctx.db, s1.sequence.id)).some((m) => m.status === 'canceled'),
   );
 
   // Full-completion path (fresh sequence on the same lead after cancel).
-  setLeadStatus(ctx.db, l1.id, 'contacted');
-  const s2 = draftFollowupSequence(ctx.db, ctx.config, freshLead(ctx, l1.id));
-  approveSequence(ctx.db, s2.sequence.id, 'acceptance-operator');
-  backdate(l1.id);
+  await setLeadStatus(ctx.db, l1.id, 'contacted');
+  const s2 = await draftFollowupSequence(ctx.db, ctx.config, await freshLead(ctx, l1.id));
+  await approveSequence(ctx.db, s2.sequence.id, 'acceptance-operator');
+  await backdate(l1.id);
   await runSequences(ctx, {});
-  backdate(l1.id);
+  await backdate(l1.id);
   const r4 = await runSequences(ctx, {});
   check(
     'sequence completes after exactly 2 follow-ups',
     r4.completed === 1 &&
-      getSequence(ctx.db, s2.sequence.id)!.status === 'completed' &&
-      listSequenceMessages(ctx.db, s2.sequence.id).filter((m) => m.status === 'sent').length === 2,
+      (await getSequence(ctx.db, s2.sequence.id))!.status === 'completed' &&
+      (await listSequenceMessages(ctx.db, s2.sequence.id)).filter((m) => m.status === 'sent').length === 2,
   );
   let thirdErr = '';
   try {
-    draftFollowupSequence(ctx.db, ctx.config, freshLead(ctx, l1.id));
+    await draftFollowupSequence(ctx.db, ctx.config, await freshLead(ctx, l1.id));
   } catch (e) {
     thirdErr = (e as Error).message;
   }
   check('a third follow-up round cannot be drafted', thirdErr.includes('already has'));
 
   // Unsubscribe/suppression auto-cancels before any send.
-  const s3 = draftFollowupSequence(ctx.db, ctx.config, l2);
-  approveSequence(ctx.db, s3.sequence.id, 'acceptance-operator');
-  suppress(ctx.db, l2.contact_email!, 'test: unsubscribed mid-sequence');
-  backdate(l2.id);
+  const s3 = await draftFollowupSequence(ctx.db, ctx.config, l2);
+  await approveSequence(ctx.db, s3.sequence.id, 'acceptance-operator');
+  await suppress(ctx.db, l2.contact_email!, 'test: unsubscribed mid-sequence');
+  await backdate(l2.id);
   const r5 = await runSequences(ctx, {});
   check(
     'unsubscribe auto-cancels the sequence with zero sends',
-    r5.canceled === 1 && r5.sent === 0 && getSequence(ctx.db, s3.sequence.id)!.status === 'canceled',
+    r5.canceled === 1 && r5.sent === 0 && (await getSequence(ctx.db, s3.sequence.id))!.status === 'canceled',
   );
 
-  const seqEvents = new Set(listEvents(ctx.db).map((e) => e.type));
+  const seqEvents = new Set((await listEvents(ctx.db)).map((e) => e.type));
   for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
     check(`logged: ${t}`, seqEvents.has(t));
   }
@@ -371,46 +376,44 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
  * built; variant assignment is deterministic + logged; winners are only
  * reported — concluding is a human act and changes no behavior.
  */
-async function testAnalyticsAndAb(ctx: ReturnType<typeof createContext>) {
+async function testAnalyticsAndAb(ctx: Awaited<ReturnType<typeof createContext>>) {
   const {
     computeAnalytics, recordDemoView, handleInboundEvent, assignVariant, concludeExperiment, EXPERIMENTS,
   } = await import('@storefront/core');
   const { listEvents } = await import('@storefront/db');
 
   // A/B assignment happened during draft/build stages — verify it's logged + stable.
-  const assigned = ctx.db.prepare(`SELECT COUNT(*) n FROM ab_assignments`).get() as { n: number };
+  const assigned = (await ctx.db.get<{ n: number }>(`SELECT COUNT(*) n FROM ab_assignments`))!;
   check('A/B assignments were recorded during draft/build', assigned.n >= 10, `${assigned.n} assignments`);
   check('every assignment has an ab.assigned audit event',
-    listEvents(ctx.db).filter((e) => e.type === 'ab.assigned').length >= assigned.n);
-  const someLead = listLeads(ctx.db).find((l) => l.status !== 'discovered')!;
-  const v1 = assignVariant(ctx.db, 'subject-style', someLead.id);
-  const v2 = assignVariant(ctx.db, 'subject-style', someLead.id);
+    (await listEvents(ctx.db)).filter((e) => e.type === 'ab.assigned').length >= assigned.n);
+  const someLead = (await listLeads(ctx.db)).find((l) => l.status !== 'discovered')!;
+  const v1 = await assignVariant(ctx.db, 'subject-style', someLead.id);
+  const v2 = await assignVariant(ctx.db, 'subject-style', someLead.id);
   check('variant assignment is stable per lead', v1 === v2);
   const variants = new Set(
-    (ctx.db.prepare(`SELECT DISTINCT variant FROM ab_assignments WHERE experiment='subject-style'`).all() as { variant: string }[])
+    (await ctx.db.all<{ variant: string }>(`SELECT DISTINCT variant FROM ab_assignments WHERE experiment='subject-style'`))
       .map((r) => r.variant),
   );
   check('both subject variants are in play', variants.has('benefit') && variants.has('question'));
-  const questionSubject = ctx.db
-    .prepare(
-      `SELECT COUNT(*) n FROM messages m JOIN ab_assignments a
-        ON a.lead_id = m.lead_id AND a.experiment = 'subject-style' AND a.variant = 'question'
-       WHERE m.channel = 'email' AND m.followup_step IS NULL AND m.subject LIKE 'Quick question%'`,
-    )
-    .get() as { n: number };
+  const questionSubject = (await ctx.db.get<{ n: number }>(
+    `SELECT COUNT(*) n FROM messages m JOIN ab_assignments a
+      ON a.lead_id = m.lead_id AND a.experiment = 'subject-style' AND a.variant = 'question'
+     WHERE m.channel = 'email' AND m.followup_step IS NULL AND m.subject LIKE 'Quick question%'`,
+  ))!;
   check('question-variant drafts actually use the alternate subject', questionSubject.n >= 1, `${questionSubject.n}`);
 
   // Demo views (beacon) + opens (provider webhook).
-  const viewed = recordDemoView(ctx.db, slugify(someLead.name));
+  const viewed = await recordDemoView(ctx.db, slugify(someLead.name));
   check('demo-view beacon resolves slug → lead and logs demo.viewed',
-    viewed && listEvents(ctx.db, someLead.id).some((e) => e.type === 'demo.viewed'));
-  check('unknown beacon slugs are ignored safely', recordDemoView(ctx.db, 'not-a-real-slug') === false);
-  const opened = listLeads(ctx.db).find((l) => !!l.contact_email)!;
-  handleInboundEvent(ctx.db, { kind: 'open', email: opened.contact_email! });
-  check('email.opened events record opens', listEvents(ctx.db).some((e) => e.type === 'open.recorded'));
+    viewed && (await listEvents(ctx.db, someLead.id)).some((e) => e.type === 'demo.viewed'));
+  check('unknown beacon slugs are ignored safely', (await recordDemoView(ctx.db, 'not-a-real-slug')) === false);
+  const opened = (await listLeads(ctx.db)).find((l) => !!l.contact_email)!;
+  await handleInboundEvent(ctx.db, { kind: 'open', email: opened.contact_email! });
+  check('email.opened events record opens', (await listEvents(ctx.db)).some((e) => e.type === 'open.recorded'));
 
   // Analytics numbers line up with what this run actually did.
-  const a = computeAnalytics(ctx.db);
+  const a = await computeAnalytics(ctx.db);
   check('analytics: sends/replies/close figures match pipeline state',
     a.totals.emailsSent >= 4 && a.totals.smsSent === 1 && a.totals.replies >= 1 &&
       a.totals.won === 1 && a.totals.lost >= 1 && a.totals.closeRate! > 0,
@@ -422,20 +425,22 @@ async function testAnalyticsAndAb(ctx: ReturnType<typeof createContext>) {
   // Winners: reported, never auto-promoted.
   const report = a.experiments.find((e) => e.name === 'subject-style')!;
   check('experiment report lists both variants with stats', report.variants.length === 2 && report.winner === null);
-  concludeExperiment(ctx.db, 'subject-style', 'question', 'human-operator');
-  const after = computeAnalytics(ctx.db).experiments.find((e) => e.name === 'subject-style')!;
+  await concludeExperiment(ctx.db, 'subject-style', 'question', 'human-operator');
+  const after = (await computeAnalytics(ctx.db)).experiments.find((e) => e.name === 'subject-style')!;
   check('human conclusion recorded with the decider', after.winner === 'question' && after.concludedBy === 'human-operator');
-  const unassigned = listLeads(ctx.db).find(
-    (l) =>
-      !ctx.db
-        .prepare(`SELECT 1 FROM ab_assignments WHERE experiment = 'subject-style' AND lead_id = ?`)
-        .get(l.id),
-  )!;
-  const freshVariant = assignVariant(ctx.db, 'subject-style', unassigned.id);
+  let unassigned: Lead | undefined;
+  for (const l of await listLeads(ctx.db)) {
+    const has = await ctx.db.get(`SELECT 1 FROM ab_assignments WHERE experiment = 'subject-style' AND lead_id = ?`, [l.id]);
+    if (!has) {
+      unassigned = l;
+      break;
+    }
+  }
+  const freshVariant = await assignVariant(ctx.db, 'subject-style', unassigned!.id);
   check(
     'conclusion does NOT auto-promote — new assignments still split deterministically',
-    freshVariant === EXPERIMENTS[0]!.variants[unassigned.id % 2]!,
-    `lead ${unassigned.id} → ${freshVariant}`,
+    freshVariant === EXPERIMENTS[0]!.variants[unassigned!.id % 2]!,
+    `lead ${unassigned!.id} → ${freshVariant}`,
   );
 }
 
@@ -444,13 +449,13 @@ async function testAnalyticsAndAb(ctx: ReturnType<typeof createContext>) {
  * purchases are approval-link-only (never bought by the system); won/lost
  * always records a reason.
  */
-async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
+async function testCloseFlow(ctx: Awaited<ReturnType<typeof createContext>>) {
   const { createProposal, requestDomainPurchase, decideDomainRequest, closeLead } =
     await import('@storefront/core');
   const { getLead, getProposalByLead, listEvents } = await import('@storefront/db');
   const { readFileSync } = await import('node:fs');
 
-  const lead = listLeads(ctx.db, 'contacted').find((l) => !!l.demo_url);
+  const lead = (await listLeads(ctx.db, 'contacted')).find((l) => !!l.demo_url);
   check('a contacted lead with a demo exists for closing', !!lead, lead?.name ?? 'none');
   if (!lead) return;
 
@@ -458,7 +463,7 @@ async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
   const proposal = await createProposal(ctx, lead);
   const file = resolve(process.cwd(), 'proposals-out', proposal.slug, 'index.html');
   const html = existsSync(file) ? readFileSync(file, 'utf8') : '';
-  check('proposal row persisted with payment link', !!getProposalByLead(ctx.db, lead.id)?.payment_link_url);
+  check('proposal row persisted with payment link', !!(await getProposalByLead(ctx.db, lead.id))?.payment_link_url);
   check(
     'proposal page renders demo link + payment CTA + price',
     html.includes(lead.demo_url!) && html.includes(proposal.payment_link_url!) && html.includes('$1,500'),
@@ -467,7 +472,7 @@ async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
     'payment is customer-initiated only (page says nothing is charged automatically)',
     html.includes('Nothing is charged until you choose to pay'),
   );
-  const noDemo = listLeads(ctx.db, 'lost').find((l) => !l.demo_url);
+  const noDemo = (await listLeads(ctx.db, 'lost')).find((l) => !l.demo_url);
   if (noDemo) {
     let err = '';
     await createProposal(ctx, noDemo).catch((e) => (err = (e as Error).message));
@@ -475,44 +480,44 @@ async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
   }
 
   // Domain purchase REQUEST — approval link only.
-  const dr = requestDomainPurchase(ctx.db, lead, 'TaqueriaLaFamiliaFW.com', 'acceptance');
+  const dr = await requestDomainPurchase(ctx.db, lead, 'TaqueriaLaFamiliaFW.com', 'acceptance');
   check(
     'domain request minted with approve/decline links (status requested)',
     dr.request.status === 'requested' && dr.approveUrl.includes(dr.request.token) && dr.request.domain === 'taquerialafamiliafw.com',
   );
   let badDomainErr = '';
   try {
-    requestDomainPurchase(ctx.db, lead, 'not a domain', 'acceptance');
+    await requestDomainPurchase(ctx.db, lead, 'not a domain', 'acceptance');
   } catch (e) {
     badDomainErr = (e as Error).message;
   }
   check('invalid domain names are rejected', badDomainErr.includes('does not look like'));
-  const decided = decideDomainRequest(ctx.db, dr.request.token, 'approved', 'human-operator');
+  const decided = await decideDomainRequest(ctx.db, dr.request.token, 'approved', 'human-operator');
   check('human decision recorded (approved, decider logged)', decided.status === 'approved' && decided.decided_by === 'human-operator');
-  const redecided = decideDomainRequest(ctx.db, dr.request.token, 'declined', 'someone-else');
+  const redecided = await decideDomainRequest(ctx.db, dr.request.token, 'declined', 'someone-else');
   check('decision is idempotent — first human decision wins', redecided.status === 'approved');
   check(
     'no purchase event exists anywhere (requests never buy)',
-    !listEvents(ctx.db).some((e) => e.type.includes('purchase')),
+    !(await listEvents(ctx.db)).some((e) => e.type.includes('purchase')),
   );
 
   // Won/lost with reasons.
   let reasonErr = '';
   try {
-    closeLead(ctx.db, lead.id, 'won', '   ');
+    await closeLead(ctx.db, lead.id, 'won', '   ');
   } catch (e) {
     reasonErr = (e as Error).message;
   }
   check('closing without a reason is refused', reasonErr.includes('reason is required'));
-  const won = closeLead(ctx.db, lead.id, 'won', 'accepted proposal after SMS demo');
+  const won = await closeLead(ctx.db, lead.id, 'won', 'accepted proposal after SMS demo');
   check(
     'won close records reason + timestamp + audit event',
     won.status === 'won' && won.close_reason === 'accepted proposal after SMS demo' && !!won.closed_at &&
-      listEvents(ctx.db, lead.id).some((e) => e.type === 'lead.won'),
+      (await listEvents(ctx.db, lead.id)).some((e) => e.type === 'lead.won'),
   );
-  const loser = listLeads(ctx.db, 'contacted')[0];
+  const loser = (await listLeads(ctx.db, 'contacted'))[0];
   if (loser) {
-    const lost = closeLead(ctx.db, loser.id, 'lost', 'went with a competitor');
+    const lost = await closeLead(ctx.db, loser.id, 'lost', 'went with a competitor');
     check('lost close records reason too', lost.status === 'lost' && lost.close_reason === 'went with a competitor');
   }
 }
@@ -522,25 +527,25 @@ async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
  * demo" SMS has its OWN gate — human approval with a documented TCPA basis,
  * STOP language, quiet hours, daily cap, and permanent opt-out.
  */
-async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
+async function testNoneSegment(ctx: Awaited<ReturnType<typeof createContext>>) {
   const {
     draftCallScript, draftDemoSms, approveSms, sendApprovedSms, recordSmsOptOut, smsPolicy,
   } = await import('@storefront/core');
   const { getLead, getSms, listEvents } = await import('@storefront/db');
 
-  const noneLead = listLeads(ctx.db, 'qualified').find((l) => l.segment === 'none' && !!l.phone);
+  const noneLead = (await listLeads(ctx.db, 'qualified')).find((l) => l.segment === 'none' && !!l.phone);
   check('a phone-first none-segment lead exists', !!noneLead, noneLead?.name ?? 'none found');
   if (!noneLead) return;
 
   // Call scripts never reach the email wire.
-  const script = draftCallScript(ctx.db, ctx.config, noneLead);
+  const script = await draftCallScript(ctx.db, ctx.config, noneLead);
   check(
     'call script drafted for the operator (channel call_script)',
     script.channel === 'call_script' && script.body!.includes(noneLead.phone!) && script.status === 'draft',
   );
   let scriptSendErr = '';
   try {
-    ctx.db.prepare(`UPDATE messages SET status='approved' WHERE id=?`).run(script.id);
+    await ctx.db.run(`UPDATE messages SET status='approved' WHERE id=?`, [script.id]);
     await sendOneMessage(ctx, script.id, { dryRun: true });
   } catch (e) {
     scriptSendErr = (e as Error).message;
@@ -550,14 +555,14 @@ async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
   // SMS needs a built demo (Gate A is per-lead and explicit).
   let noDemoErr = '';
   try {
-    draftDemoSms(ctx.db, ctx.config, noneLead);
+    await draftDemoSms(ctx.db, ctx.config, noneLead);
   } catch (e) {
     noDemoErr = (e as Error).message;
   }
   check('SMS draft refuses without a demo (Gate A first)', noDemoErr.includes('Gate A'));
   await buildOne(ctx, noneLead.id);
-  const built = getLead(ctx.db, noneLead.id)!;
-  const sms = draftDemoSms(ctx.db, ctx.config, built);
+  const built = (await getLead(ctx.db, noneLead.id))!;
+  const sms = await draftDemoSms(ctx.db, ctx.config, built);
   check(
     'SMS draft carries demo link + STOP opt-out language',
     sms.body.includes(built.demo_url!) && sms.body.includes('Reply STOP'),
@@ -574,13 +579,14 @@ async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
   // Gate: approval REQUIRES a documented TCPA basis.
   let basisErr = '';
   try {
-    approveSms(ctx.db, sms.id, 'acceptance', '');
+    await approveSms(ctx.db, sms.id, 'acceptance', '');
   } catch (e) {
     basisErr = (e as Error).message;
   }
   check('approval without a TCPA basis is refused', basisErr.includes('TCPA basis required'));
-  approveSms(ctx.db, sms.id, 'acceptance', 'Owner said OK to text on discovery call 2026-07-16 (see CRM note #42)');
-  check('TCPA basis + approver recorded on the SMS', getSms(ctx.db, sms.id)!.tcpa_basis!.includes('CRM note') && getSms(ctx.db, sms.id)!.approved_by === 'acceptance');
+  await approveSms(ctx.db, sms.id, 'acceptance', 'Owner said OK to text on discovery call 2026-07-16 (see CRM note #42)');
+  const smsRow = (await getSms(ctx.db, sms.id))!;
+  check('TCPA basis + approver recorded on the SMS', smsRow.tcpa_basis!.includes('CRM note') && smsRow.approved_by === 'acceptance');
 
   // Gate: quiet hours (10pm local is blocked even when approved).
   const night = new Date(Date.UTC(2026, 6, 17, (22 - policy.tzOffsetHours) % 24, 0, 0));
@@ -589,7 +595,7 @@ async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
 
   // Dry-run passes in the daytime, nothing sent.
   const dry = await sendApprovedSms(ctx, sms.id, { dryRun: true, now: daytime });
-  check('approved SMS passes the gate in dry-run (nothing sent)', dry.gate.ok && !dry.sent && getSms(ctx.db, sms.id)!.status === 'approved');
+  check('approved SMS passes the gate in dry-run (nothing sent)', dry.gate.ok && !dry.sent && (await getSms(ctx.db, sms.id))!.status === 'approved');
 
   // Real (mock) send → sms-outbox file + lead contacted.
   const real = await sendApprovedSms(ctx, sms.id, { now: daytime });
@@ -598,16 +604,16 @@ async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
     'approved SMS sends via the mock provider to sms-outbox',
     real.sent && existsSync(smsOutbox) && readdirSync(smsOutbox).length === 1,
   );
-  check('SMS contact advances the lead to contacted', getLead(ctx.db, noneLead.id)!.status === 'contacted');
+  check('SMS contact advances the lead to contacted', (await getLead(ctx.db, noneLead.id))!.status === 'contacted');
 
   // STOP → permanent opt-out; further sends blocked.
-  recordSmsOptOut(ctx.db, built.phone!, built.id);
-  const sms2 = draftDemoSms(ctx.db, ctx.config, getLead(ctx.db, built.id)!);
-  approveSms(ctx.db, sms2.id, 'acceptance', 'same documented consent as sms #1 (CRM note #42)');
+  await recordSmsOptOut(ctx.db, built.phone!, built.id);
+  const sms2 = await draftDemoSms(ctx.db, ctx.config, (await getLead(ctx.db, built.id))!);
+  await approveSms(ctx.db, sms2.id, 'acceptance', 'same documented consent as sms #1 (CRM note #42)');
   const blocked = await sendApprovedSms(ctx, sms2.id, { now: daytime });
   check('STOP opt-out permanently blocks future texts', !blocked.sent && blocked.gate.reasons.some((r) => r.includes('opted out')));
 
-  const smsEvents = new Set(listEvents(ctx.db).map((e) => e.type));
+  const smsEvents = new Set((await listEvents(ctx.db)).map((e) => e.type));
   for (const t of ['callscript.drafted', 'sms.drafted', 'sms.approved', 'sms.dry_run', 'sms.sent', 'sms.blocked', 'sms.opt_out']) {
     check(`logged: ${t}`, smsEvents.has(t));
   }
@@ -618,7 +624,7 @@ async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
  * with published=0) and logged. Reply/bounce/complaint fixtures drive the same
  * handler the Resend webhook uses.
  */
-async function testUnpublishAndReplies(ctx: ReturnType<typeof createContext>) {
+async function testUnpublishAndReplies(ctx: Awaited<ReturnType<typeof createContext>>) {
   const { runUnpublishJob, parseResendWebhook, handleInboundEvent, verifyResendSignature } =
     await import('@storefront/core');
   const { listEvents, isSuppressed, getLead } = await import('@storefront/db');
@@ -628,7 +634,7 @@ async function testUnpublishAndReplies(ctx: ReturnType<typeof createContext>) {
   check('unpublish job is a no-op before any TTL expires', early.examined === 0);
 
   // …but everything is due 15 days from now.
-  const publishedBefore = (ctx.db.prepare(`SELECT COUNT(*) n FROM demos WHERE published = 1`).get() as { n: number }).n;
+  const publishedBefore = (await ctx.db.get<{ n: number }>(`SELECT COUNT(*) n FROM demos WHERE published = 1`))!.n;
   const future = new Date(Date.now() + 15 * 86_400_000);
   const late = await runUnpublishJob(ctx, { now: future });
   check(
@@ -639,35 +645,35 @@ async function testUnpublishAndReplies(ctx: ReturnType<typeof createContext>) {
   check('demo files are actually gone', !existsSync(resolve(process.cwd(), 'demos-out', 'taqueria-la-familia')));
   check(
     'demo rows survive with published=0 (history kept)',
-    (ctx.db.prepare(`SELECT COUNT(*) n FROM demos WHERE published = 0`).get() as { n: number }).n === publishedBefore,
+    (await ctx.db.get<{ n: number }>(`SELECT COUNT(*) n FROM demos WHERE published = 0`))!.n === publishedBefore,
   );
-  check('logged: demo.unpublished', listEvents(ctx.db).some((e) => e.type === 'demo.unpublished'));
+  check('logged: demo.unpublished', (await listEvents(ctx.db)).some((e) => e.type === 'demo.unpublished'));
 
   // Reply detection — fixture inbound events in the Resend wire format.
-  const taqueria = listLeads(ctx.db).find((l) => l.name.includes('Taqueria'))!;
+  const taqueria = (await listLeads(ctx.db)).find((l) => l.name.includes('Taqueria'))!;
   const replyEvt = parseResendWebhook({
     type: 'email.received',
     data: { from: `Taqueria La Familia <${taqueria.contact_email}>`, subject: 'Re: your preview' },
   });
   check('inbound reply payload parses (display-name form)', replyEvt?.kind === 'reply' && replyEvt.email === taqueria.contact_email);
-  const replyRes = handleInboundEvent(ctx.db, replyEvt!);
+  const replyRes = await handleInboundEvent(ctx.db, replyEvt!);
   check(
     'reply flips the lead to replied + logs reply.received',
     replyRes.matched &&
-      getLead(ctx.db, taqueria.id)!.status === 'replied' &&
-      listEvents(ctx.db, taqueria.id).some((e) => e.type === 'reply.received'),
+      (await getLead(ctx.db, taqueria.id))!.status === 'replied' &&
+      (await listEvents(ctx.db, taqueria.id)).some((e) => e.type === 'reply.received'),
   );
 
-  const plumber = listLeads(ctx.db).find((l) => l.name.includes('Big Tex'))!;
+  const plumber = (await listLeads(ctx.db)).find((l) => l.name.includes('Big Tex'))!;
   const bounceEvt = parseResendWebhook({ type: 'email.bounced', data: { to: [plumber.contact_email!] } });
-  handleInboundEvent(ctx.db, bounceEvt!);
+  await handleInboundEvent(ctx.db, bounceEvt!);
   check(
     'bounce suppresses the address permanently',
-    isSuppressed(ctx.db, plumber.contact_email!) &&
-      listEvents(ctx.db, plumber.id).some((e) => e.type === 'bounce.recorded'),
+    (await isSuppressed(ctx.db, plumber.contact_email!)) &&
+      (await listEvents(ctx.db, plumber.id)).some((e) => e.type === 'bounce.recorded'),
   );
 
-  const unknown = handleInboundEvent(ctx.db, { kind: 'reply', email: 'stranger@nowhere.example' });
+  const unknown = await handleInboundEvent(ctx.db, { kind: 'reply', email: 'stranger@nowhere.example' });
   check('unmatched inbound addresses are logged, not crashed', !unknown.matched);
 
   // Webhook signature verification (svix scheme).
@@ -691,7 +697,7 @@ async function testUnpublishAndReplies(ctx: ReturnType<typeof createContext>) {
  * 5xx recovery, Retry-After honoring, no-retry on 4xx, per-attempt timeout,
  * and structured adapter.* events flowing into the audit log.
  */
-async function testAdapterHardening(ctx: ReturnType<typeof createContext>) {
+async function testAdapterHardening(ctx: Awaited<ReturnType<typeof createContext>>) {
   const hits: Record<string, number> = {};
   const server = createServer((req, res) => {
     const path = req.url ?? '/';
@@ -748,10 +754,10 @@ async function testAdapterHardening(ctx: ReturnType<typeof createContext>) {
     );
 
     const { listEvents } = await import('@storefront/db');
-    const netEvents = listEvents(ctx.db).map((e) => e.type);
+    const netEvents = (await listEvents(ctx.db)).map((e) => e.type);
     check('adapter.retry events reach the audit log', netEvents.includes('adapter.retry'));
     check('adapter.error events reach the audit log', netEvents.includes('adapter.error'));
-    const payloads = listEvents(ctx.db)
+    const payloads = (await listEvents(ctx.db))
       .filter((e) => e.type.startsWith('adapter.'))
       .map((e) => e.payload_json ?? '');
     check('adapter event payloads never contain query strings (no secrets)', payloads.every((p) => !p.includes('?')));
@@ -760,8 +766,8 @@ async function testAdapterHardening(ctx: ReturnType<typeof createContext>) {
   }
 }
 
-function freshLead(ctx: ReturnType<typeof createContext>, id: number): Lead {
-  return listLeads(ctx.db).find((l) => l.id === id)!;
+async function freshLead(ctx: Awaited<ReturnType<typeof createContext>>, id: number): Promise<Lead> {
+  return (await listLeads(ctx.db)).find((l) => l.id === id)!;
 }
 function isSortedDesc(xs: number[]): boolean {
   return xs.every((x, i) => i === 0 || xs[i - 1]! >= x);

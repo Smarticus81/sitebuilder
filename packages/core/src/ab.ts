@@ -16,10 +16,11 @@ export const EXPERIMENTS: ExperimentDef[] = [
   { name: 'template-accent', kind: 'template', variants: ['default', 'warm'] },
 ];
 
-function ensureExperimentRow(db: DB, def: ExperimentDef): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO experiments (name, kind, variants) VALUES (?, ?, ?)`,
-  ).run(def.name, def.kind, JSON.stringify(def.variants));
+async function ensureExperimentRow(db: DB, def: ExperimentDef): Promise<void> {
+  await db.run(
+    `INSERT INTO experiments (name, kind, variants) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING`,
+    [def.name, def.kind, JSON.stringify(def.variants)],
+  );
 }
 
 /**
@@ -27,40 +28,44 @@ function ensureExperimentRow(db: DB, def: ExperimentDef): void {
  * variant count — deterministic, evenly split) and logs; later calls return
  * the recorded assignment unchanged, even after the experiment concludes.
  */
-export function assignVariant(db: DB, experimentName: string, leadId: number): string {
+export async function assignVariant(db: DB, experimentName: string, leadId: number): Promise<string> {
   const def = EXPERIMENTS.find((e) => e.name === experimentName);
   if (!def) throw new Error(`Unknown experiment: ${experimentName}`);
-  ensureExperimentRow(db, def);
+  await ensureExperimentRow(db, def);
 
-  const existing = db
-    .prepare(`SELECT variant FROM ab_assignments WHERE experiment = ? AND lead_id = ?`)
-    .get(experimentName, leadId) as { variant: string } | undefined;
+  const existing = await db.get<{ variant: string }>(
+    `SELECT variant FROM ab_assignments WHERE experiment = ? AND lead_id = ?`,
+    [experimentName, leadId],
+  );
   if (existing) return existing.variant;
 
   const variant = def.variants[leadId % def.variants.length]!;
-  db.prepare(
-    `INSERT INTO ab_assignments (experiment, lead_id, variant) VALUES (?, ?, ?)`,
-  ).run(experimentName, leadId, variant);
-  logEvent(db, 'ab.assigned', leadId, { experiment: experimentName, variant });
+  await db.run(`INSERT INTO ab_assignments (experiment, lead_id, variant) VALUES (?, ?, ?)`, [
+    experimentName,
+    leadId,
+    variant,
+  ]);
+  await logEvent(db, 'ab.assigned', leadId, { experiment: experimentName, variant });
   return variant;
 }
 
 /** Human-only: record the winning variant. Changes nothing automatically. */
-export function concludeExperiment(
+export async function concludeExperiment(
   db: DB,
   experimentName: string,
   winner: string,
   concludedBy: string,
-): void {
+): Promise<void> {
   const def = EXPERIMENTS.find((e) => e.name === experimentName);
   if (!def) throw new Error(`Unknown experiment: ${experimentName}`);
   if (!def.variants.includes(winner))
     throw new Error(`"${winner}" is not a variant of ${experimentName} (${def.variants.join(', ')})`);
-  ensureExperimentRow(db, def);
-  db.prepare(
-    `UPDATE experiments SET winner = ?, concluded_by = ?, concluded_at = datetime('now') WHERE name = ?`,
-  ).run(winner, concludedBy, experimentName);
-  logEvent(db, 'ab.concluded', null, { experiment: experimentName, winner, concluded_by: concludedBy });
+  await ensureExperimentRow(db, def);
+  await db.run(
+    `UPDATE experiments SET winner = ?, concluded_by = ?, concluded_at = ${db.nowSql} WHERE name = ?`,
+    [winner, concludedBy, experimentName],
+  );
+  await logEvent(db, 'ab.concluded', null, { experiment: experimentName, winner, concluded_by: concludedBy });
 }
 
 export interface VariantReport {
@@ -81,48 +86,51 @@ export interface ExperimentReport {
   variants: VariantReport[];
 }
 
-export function experimentReport(db: DB): ExperimentReport[] {
-  return EXPERIMENTS.map((def) => {
-    ensureExperimentRow(db, def);
-    const row = db.prepare(`SELECT winner, concluded_by FROM experiments WHERE name = ?`).get(def.name) as
-      | { winner: string | null; concluded_by: string | null }
-      | undefined;
-    const variants: VariantReport[] = def.variants.map((variant) => {
-      const stats = db
-        .prepare(
-          `SELECT
-             COUNT(DISTINCT a.lead_id) AS leads,
-             COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN m.lead_id END) AS sent,
-             COUNT(DISTINCT CASE WHEN e.type = 'reply.received' THEN e.lead_id END) AS replies,
-             COUNT(DISTINCT CASE WHEN l.status = 'won' THEN l.id END) AS won
-           FROM ab_assignments a
-           JOIN leads l ON l.id = a.lead_id
-           LEFT JOIN messages m ON m.lead_id = a.lead_id AND m.channel = 'email'
-           LEFT JOIN events e ON e.lead_id = a.lead_id AND e.type = 'reply.received'
-           WHERE a.experiment = ? AND a.variant = ?`,
-        )
-        .get(def.name, variant) as { leads: number; sent: number; replies: number; won: number };
-      return {
+export async function experimentReport(db: DB): Promise<ExperimentReport[]> {
+  const reports: ExperimentReport[] = [];
+  for (const def of EXPERIMENTS) {
+    await ensureExperimentRow(db, def);
+    const row = await db.get<{ winner: string | null; concluded_by: string | null }>(
+      `SELECT winner, concluded_by FROM experiments WHERE name = ?`,
+      [def.name],
+    );
+    const variants: VariantReport[] = [];
+    for (const variant of def.variants) {
+      const stats = (await db.get<{ leads: number; sent: number; replies: number; won: number }>(
+        `SELECT
+           COUNT(DISTINCT a.lead_id) AS leads,
+           COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN m.lead_id END) AS sent,
+           COUNT(DISTINCT CASE WHEN e.type = 'reply.received' THEN e.lead_id END) AS replies,
+           COUNT(DISTINCT CASE WHEN l.status = 'won' THEN l.id END) AS won
+         FROM ab_assignments a
+         JOIN leads l ON l.id = a.lead_id
+         LEFT JOIN messages m ON m.lead_id = a.lead_id AND m.channel = 'email'
+         LEFT JOIN events e ON e.lead_id = a.lead_id AND e.type = 'reply.received'
+         WHERE a.experiment = ? AND a.variant = ?`,
+        [def.name, variant],
+      ))!;
+      variants.push({
         variant,
         leads: stats.leads,
         sent: stats.sent,
         replies: stats.replies,
         won: stats.won,
         replyRate: stats.sent > 0 ? stats.replies / stats.sent : null,
-      };
-    });
+      });
+    }
     const withData = variants.filter((v) => v.sent > 0);
     const leader =
       withData.length > 1
         ? [...withData].sort((a, b) => (b.replyRate ?? 0) - (a.replyRate ?? 0))[0]!.variant
         : null;
-    return {
+    reports.push({
       name: def.name,
       kind: def.kind,
       winner: row?.winner ?? null,
       concludedBy: row?.concluded_by ?? null,
       leader,
       variants,
-    };
-  });
+    });
+  }
+  return reports;
 }

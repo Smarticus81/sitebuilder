@@ -35,86 +35,77 @@ export interface Analytics {
   experiments: ExperimentReport[];
 }
 
-const n = (db: DB, sql: string, ...params: unknown[]): number =>
-  (db.prepare(sql).get(...params) as { n: number }).n;
+const n = async (db: DB, sql: string): Promise<number> =>
+  (await db.get<{ n: number }>(sql))!.n;
 
-export function computeAnalytics(db: DB): Analytics {
-  const won = n(db, `SELECT COUNT(*) n FROM leads WHERE status = 'won'`);
-  const lost = n(db, `SELECT COUNT(*) n FROM leads WHERE status = 'lost'`);
+export async function computeAnalytics(db: DB): Promise<Analytics> {
+  const won = await n(db, `SELECT COUNT(*) n FROM leads WHERE status = 'won'`);
+  const lost = await n(db, `SELECT COUNT(*) n FROM leads WHERE status = 'lost'`);
 
   const totals: AnalyticsTotals = {
-    leads: n(db, `SELECT COUNT(*) n FROM leads`),
-    emailsSent: n(db, `SELECT COUNT(*) n FROM messages WHERE channel = 'email' AND status = 'sent'`),
-    smsSent: n(db, `SELECT COUNT(*) n FROM sms_messages WHERE status = 'sent'`),
-    opens: n(db, `SELECT COUNT(*) n FROM events WHERE type = 'open.recorded'`),
-    replies: n(db, `SELECT COUNT(*) n FROM events WHERE type = 'reply.received'`),
-    demoViews: n(db, `SELECT COUNT(*) n FROM events WHERE type = 'demo.viewed'`),
+    leads: await n(db, `SELECT COUNT(*) n FROM leads`),
+    emailsSent: await n(db, `SELECT COUNT(*) n FROM messages WHERE channel = 'email' AND status = 'sent'`),
+    smsSent: await n(db, `SELECT COUNT(*) n FROM sms_messages WHERE status = 'sent'`),
+    opens: await n(db, `SELECT COUNT(*) n FROM events WHERE type = 'open.recorded'`),
+    replies: await n(db, `SELECT COUNT(*) n FROM events WHERE type = 'reply.received'`),
+    demoViews: await n(db, `SELECT COUNT(*) n FROM events WHERE type = 'demo.viewed'`),
     won,
     lost,
     closeRate: won + lost > 0 ? won / (won + lost) : null,
-    mrrCents:
-      (db
-        .prepare(
-          `SELECT COALESCE(SUM(p.monthly_cents), 0) s FROM leads l
-           JOIN proposals p ON p.id = (
-             SELECT id FROM proposals WHERE lead_id = l.id ORDER BY id DESC LIMIT 1
-           )
-           WHERE l.status = 'won'`,
-        )
-        .get() as { s: number }).s,
-    oneTimeRevenueCents:
-      (db
-        .prepare(
-          `SELECT COALESCE(SUM(p.price_cents), 0) s FROM leads l
-           JOIN proposals p ON p.id = (
-             SELECT id FROM proposals WHERE lead_id = l.id ORDER BY id DESC LIMIT 1
-           )
-           WHERE l.status = 'won'`,
-        )
-        .get() as { s: number }).s,
+    mrrCents: (await db.get<{ s: number }>(
+      `SELECT COALESCE(SUM(p.monthly_cents), 0) s FROM leads l
+       JOIN proposals p ON p.id = (
+         SELECT id FROM proposals WHERE lead_id = l.id ORDER BY id DESC LIMIT 1
+       )
+       WHERE l.status = 'won'`,
+    ))!.s,
+    oneTimeRevenueCents: (await db.get<{ s: number }>(
+      `SELECT COALESCE(SUM(p.price_cents), 0) s FROM leads l
+       JOIN proposals p ON p.id = (
+         SELECT id FROM proposals WHERE lead_id = l.id ORDER BY id DESC LIMIT 1
+       )
+       WHERE l.status = 'won'`,
+    ))!.s,
   };
 
-  const breakdown = (keyExpr: string, join: string): BreakdownRow[] =>
-    db
-      .prepare(
-        `SELECT ${keyExpr} AS key,
-           COUNT(DISTINCT l.id) AS leads,
-           COUNT(DISTINCT d.lead_id) AS demosBuilt,
-           COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN m.lead_id END) AS emailsSent,
-           COUNT(DISTINCT CASE WHEN e.type = 'reply.received' THEN e.lead_id END) AS replies,
-           COUNT(DISTINCT CASE WHEN l.status = 'won' THEN l.id END) AS won
-         FROM leads l
-         ${join}
-         LEFT JOIN messages m ON m.lead_id = l.id AND m.channel = 'email'
-         LEFT JOIN events e ON e.lead_id = l.id AND e.type = 'reply.received'
-         GROUP BY key HAVING key IS NOT NULL ORDER BY leads DESC`,
-      )
-      .all() as BreakdownRow[];
+  const breakdown = (keyExpr: string, join: string): Promise<BreakdownRow[]> =>
+    db.all<BreakdownRow>(
+      `SELECT ${keyExpr} AS key,
+         COUNT(DISTINCT l.id) AS leads,
+         COUNT(DISTINCT d.lead_id) AS "demosBuilt",
+         COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN m.lead_id END) AS "emailsSent",
+         COUNT(DISTINCT CASE WHEN e.type = 'reply.received' THEN e.lead_id END) AS replies,
+         COUNT(DISTINCT CASE WHEN l.status = 'won' THEN l.id END) AS won
+       FROM leads l
+       ${join}
+       LEFT JOIN messages m ON m.lead_id = l.id AND m.channel = 'email'
+       LEFT JOIN events e ON e.lead_id = l.id AND e.type = 'reply.received'
+       GROUP BY 1 HAVING ${keyExpr} IS NOT NULL ORDER BY leads DESC`,
+    );
 
   return {
     totals,
-    byTemplate: breakdown(
+    byTemplate: await breakdown(
       'd.template',
       `LEFT JOIN demos d ON d.id = (SELECT id FROM demos WHERE lead_id = l.id ORDER BY id DESC LIMIT 1)`,
     ),
-    bySegment: breakdown(
+    bySegment: await breakdown(
       'l.segment',
       `LEFT JOIN demos d ON d.id = (SELECT id FROM demos WHERE lead_id = l.id ORDER BY id DESC LIMIT 1)`,
     ),
-    experiments: experimentReport(db),
+    experiments: await experimentReport(db),
   };
 }
 
 /** Beacon hit → demo.viewed audit event (slug → lead via latest demo). */
-export function recordDemoView(db: DB, slug: string): boolean {
-  const row = db
-    .prepare(
-      `SELECT d.lead_id AS leadId FROM demos d JOIN leads l ON l.id = d.lead_id
-       WHERE d.subdomain LIKE ? || '.%' OR d.subdomain = ?
-       ORDER BY d.id DESC LIMIT 1`,
-    )
-    .get(slug, slug) as { leadId: number } | undefined;
+export async function recordDemoView(db: DB, slug: string): Promise<boolean> {
+  const row = await db.get<{ leadId: number }>(
+    `SELECT d.lead_id AS "leadId" FROM demos d JOIN leads l ON l.id = d.lead_id
+     WHERE d.subdomain LIKE ? || '.%' OR d.subdomain = ?
+     ORDER BY d.id DESC LIMIT 1`,
+    [slug, slug],
+  );
   if (!row) return false;
-  logEvent(db, 'demo.viewed', row.leadId, { slug });
+  await logEvent(db, 'demo.viewed', row.leadId, { slug });
   return true;
 }

@@ -54,20 +54,20 @@ export async function draftOutreach(deps: DraftDeps, lead: Lead): Promise<Messag
 
   // A/B: subject style. Assignment is stable per lead and audit-logged; the
   // 'benefit' variant keeps the LLM subject, 'question' uses the alt style.
-  const subjectVariant = assignVariant(db, 'subject-style', lead.id);
+  const subjectVariant = await assignVariant(db, 'subject-style', lead.id);
   const subject =
     subjectVariant === 'question'
       ? `Quick question about ${lead.name}'s website`
       : draft.subject;
 
-  const message = insertMessage(db, {
+  const message = await insertMessage(db, {
     lead_id: lead.id,
     channel: 'email',
     subject,
     body,
     status: 'draft',
   });
-  logEvent(db, 'outreach.drafted', lead.id, { message_id: message.id });
+  await logEvent(db, 'outreach.drafted', lead.id, { message_id: message.id });
   return message;
 }
 

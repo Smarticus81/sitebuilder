@@ -22,7 +22,10 @@ const num = (v: string | undefined, fallback: number): number => {
  * Load config from env, persisting it into the DB `config` row so the dashboard
  * and audit log have a stable source of truth. Env always wins on (re)load.
  */
-export function loadConfig(db: DB, env: NodeJS.ProcessEnv = process.env): StorefrontConfig {
+export async function loadConfig(
+  db: DB,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<StorefrontConfig> {
   const cfg: StorefrontConfig = {
     senderName: env.SENDER_NAME ?? 'Unknown Sender',
     senderBusiness: env.SENDER_BUSINESS ?? 'Storefront Web Studio',
@@ -34,7 +37,7 @@ export function loadConfig(db: DB, env: NodeJS.ProcessEnv = process.env): Storef
     demoTtlDays: num(env.DEMO_TTL_DAYS, 14),
     demoBaseDomain: env.DEMO_BASE_DOMAIN ?? 'demo.example.com',
   };
-  upsertConfig(db, {
+  await upsertConfig(db, {
     sender_name: cfg.senderName,
     sender_business: cfg.senderBusiness,
     mailing_address: cfg.mailingAddress,
@@ -48,8 +51,8 @@ export function loadConfig(db: DB, env: NodeJS.ProcessEnv = process.env): Storef
 }
 
 /** Read persisted config back out of the DB (used by the API server). */
-export function readConfig(db: DB): StorefrontConfig | null {
-  const row = getConfigRow(db);
+export async function readConfig(db: DB): Promise<StorefrontConfig | null> {
+  const row = await getConfigRow(db);
   if (!row) return null;
   return {
     senderName: row.sender_name ?? '',

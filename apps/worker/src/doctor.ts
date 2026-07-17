@@ -130,7 +130,7 @@ async function main() {
   for (const w of report.warnings) console.log(`  ⚠ ${w}`);
 
   // 2. Adapter modes + live pings.
-  const ctx = createContext();
+  const ctx = await createContext();
   const modes = adapterModes(ctx);
   console.log('\n── Adapters ─────────────────────────────────────────────────');
   for (const [name, mode] of Object.entries(modes)) {
@@ -152,8 +152,8 @@ async function main() {
   // 3. Database.
   console.log('\n── Database ─────────────────────────────────────────────────');
   try {
-    ctx.db.prepare('SELECT 1').get();
-    console.log(`  ✓ ${env.DATABASE_URL ?? 'sqlite:./data/storefront.db'} reachable`);
+    await ctx.db.get('SELECT 1');
+    console.log(`  ✓ ${env.DATABASE_URL ?? 'sqlite:./data/storefront.db'} reachable (${ctx.db.dialect})`);
   } catch (err) {
     console.log(`  ✗ database error: ${String(err)}`);
     failures++;

@@ -77,7 +77,7 @@ export async function createProposal(
   writeFileSync(resolve(dir, 'index.html'), html);
   const url = `${publicBaseUrl()}/proposals/${slug}/`;
 
-  return insertProposal(db, {
+  return await insertProposal(db, {
     lead_id: lead.id,
     slug,
     url,
@@ -166,18 +166,18 @@ export interface DomainRequestWithLink {
   declineUrl: string;
 }
 
-export function requestDomainPurchase(
+export async function requestDomainPurchase(
   db: DB,
   lead: Lead,
   domain: string,
   requestedBy: string,
-): DomainRequestWithLink {
+): Promise<DomainRequestWithLink> {
   const clean = domain.trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) {
     throw new Error(`"${domain}" does not look like a valid domain name`);
   }
   const token = randomBytes(16).toString('hex');
-  const request = insertDomainRequest(db, {
+  const request = await insertDomainRequest(db, {
     lead_id: lead.id,
     domain: clean,
     token,
@@ -193,32 +193,32 @@ export function requestDomainPurchase(
 
 /** Record the HUMAN's decision. Approving records intent only — purchasing the
  *  domain remains a manual operator action outside this system. */
-export function decideDomainRequest(
+export async function decideDomainRequest(
   db: DB,
   token: string,
   decision: 'approved' | 'declined',
   decidedBy: string,
-): DomainRequest {
-  const existing = getDomainRequestByToken(db, token);
+): Promise<DomainRequest> {
+  const existing = await getDomainRequestByToken(db, token);
   if (!existing) throw new Error('Domain request not found');
   return decideDomainRequestDb(db, token, decision, decidedBy);
 }
 
 // ── Won / lost with reasons ───────────────────────────────────────────────────
 
-export function closeLead(
+export async function closeLead(
   db: DB,
   leadId: number,
   outcome: 'won' | 'lost',
   reason: string,
-): Lead {
-  const lead = getLead(db, leadId);
+): Promise<Lead> {
+  const lead = await getLead(db, leadId);
   if (!lead) throw new Error(`Lead ${leadId} not found`);
   if (!reason.trim()) throw new Error('A close reason is required (won/lost must be explainable)');
-  const updated = setLeadStatus(db, leadId, outcome, {
+  const updated = await setLeadStatus(db, leadId, outcome, {
     close_reason: reason.trim(),
     closed_at: new Date().toISOString(),
   });
-  logEvent(db, `lead.${outcome}`, leadId, { reason: reason.trim() });
+  await logEvent(db, `lead.${outcome}`, leadId, { reason: reason.trim() });
   return updated;
 }

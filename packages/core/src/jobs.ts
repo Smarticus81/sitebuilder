@@ -21,13 +21,12 @@ export async function runUnpublishJob(
 ): Promise<UnpublishJobResult> {
   const { db, deploy } = deps;
   const now = (opts.now ?? new Date()).toISOString();
-  const due = db
-    .prepare(
-      `SELECT d.*, l.name AS lead_name FROM demos d
-       JOIN leads l ON l.id = d.lead_id
-       WHERE d.published = 1 AND d.unpublish_at IS NOT NULL AND d.unpublish_at <= ?`,
-    )
-    .all(now) as (Demo & { lead_name: string })[];
+  const due = await db.all<Demo & { lead_name: string }>(
+    `SELECT d.*, l.name AS lead_name FROM demos d
+     JOIN leads l ON l.id = d.lead_id
+     WHERE d.published = 1 AND d.unpublish_at IS NOT NULL AND d.unpublish_at <= ?`,
+    [now],
+  );
 
   let unpublished = 0;
   let failed = 0;
@@ -35,8 +34,8 @@ export async function runUnpublishJob(
     const slug = slugify(demo.lead_name);
     try {
       await deploy.unpublish(slug);
-      updateDemo(db, demo.id, { published: 0 });
-      logEvent(db, 'demo.unpublished', demo.lead_id, {
+      await updateDemo(db, demo.id, { published: 0 });
+      await logEvent(db, 'demo.unpublished', demo.lead_id, {
         demo_id: demo.id,
         slug,
         was_due_at: demo.unpublish_at,
@@ -44,7 +43,7 @@ export async function runUnpublishJob(
       unpublished++;
     } catch (err) {
       failed++;
-      logEvent(db, 'demo.unpublish_failed', demo.lead_id, {
+      await logEvent(db, 'demo.unpublish_failed', demo.lead_id, {
         demo_id: demo.id,
         slug,
         error: String(err).slice(0, 300),

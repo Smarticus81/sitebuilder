@@ -1,4 +1,4 @@
-import { getDb, logEvent, type DB } from '@storefront/db';
+import { initDb, logEvent, type DB } from '@storefront/db';
 import type { NetLogger } from '@storefront/net';
 import { createPlacesProvider, type PlacesProvider } from '@storefront/places';
 import { createLlmProvider, type LlmProvider } from '@storefront/llm';
@@ -24,12 +24,15 @@ export interface Context {
 
 let cached: Context | null = null;
 
-export function createContext(env: NodeJS.ProcessEnv = process.env): Context {
+export async function createContext(env: NodeJS.ProcessEnv = process.env): Promise<Context> {
   if (cached) return cached;
-  const db = getDb();
-  const config = loadConfig(db, env);
+  const db = await initDb();
+  const config = await loadConfig(db, env);
   // Adapter retries/failures land in the audit log alongside pipeline events.
-  const netLog: NetLogger = (type, payload) => logEvent(db, type, null, payload);
+  // Fire-and-forget: a log write must never fail a network call.
+  const netLog: NetLogger = (type, payload) => {
+    void logEvent(db, type, null, payload).catch(() => undefined);
+  };
   cached = {
     db,
     config,

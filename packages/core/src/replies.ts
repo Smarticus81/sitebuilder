@@ -23,45 +23,46 @@ export interface InboundResult {
   action?: string;
 }
 
-function leadByEmail(db: DB, email: string): Lead | undefined {
-  return db
-    .prepare(`SELECT * FROM leads WHERE lower(contact_email) = ? ORDER BY id ASC LIMIT 1`)
-    .get(email.toLowerCase().trim()) as Lead | undefined;
+async function leadByEmail(db: DB, email: string): Promise<Lead | undefined> {
+  return db.get<Lead>(`SELECT * FROM leads WHERE lower(contact_email) = ? ORDER BY id ASC LIMIT 1`, [
+    email.toLowerCase().trim(),
+  ]);
 }
 
 /** Apply one inbound event to the pipeline. Idempotent. */
-export function handleInboundEvent(db: DB, evt: InboundEmailEvent): InboundResult {
-  const lead = leadByEmail(db, evt.email);
+export async function handleInboundEvent(db: DB, evt: InboundEmailEvent): Promise<InboundResult> {
+  const lead = await leadByEmail(db, evt.email);
   if (!lead) {
-    logEvent(db, 'inbound.unmatched', null, { kind: evt.kind, email: evt.email });
+    await logEvent(db, 'inbound.unmatched', null, { kind: evt.kind, email: evt.email });
     return { matched: false };
   }
 
   switch (evt.kind) {
     case 'reply': {
-      if (lead.status !== 'replied') setLeadStatus(db, lead.id, 'replied');
-      cancelSequencesForLead(db, lead.id, 'lead replied');
-      logEvent(db, 'reply.received', lead.id, { email: evt.email, subject: evt.subject ?? null });
+      if (lead.status !== 'replied') await setLeadStatus(db, lead.id, 'replied');
+      await cancelSequencesForLead(db, lead.id, 'lead replied');
+      await logEvent(db, 'reply.received', lead.id, { email: evt.email, subject: evt.subject ?? null });
       return { matched: true, leadId: lead.id, action: 'replied' };
     }
     case 'bounce': {
-      db.prepare(
+      await db.run(
         `UPDATE messages SET status = 'bounced'
          WHERE lead_id = ? AND channel = 'email' AND status = 'sent'`,
-      ).run(lead.id);
-      addSuppression(db, evt.email, 'hard bounce');
-      cancelSequencesForLead(db, lead.id, 'address bounced');
-      logEvent(db, 'bounce.recorded', lead.id, { email: evt.email });
+        [lead.id],
+      );
+      await addSuppression(db, evt.email, 'hard bounce');
+      await cancelSequencesForLead(db, lead.id, 'address bounced');
+      await logEvent(db, 'bounce.recorded', lead.id, { email: evt.email });
       return { matched: true, leadId: lead.id, action: 'bounced+suppressed' };
     }
     case 'complaint': {
-      addSuppression(db, evt.email, 'spam complaint');
-      cancelSequencesForLead(db, lead.id, 'recipient complained');
-      logEvent(db, 'complaint.recorded', lead.id, { email: evt.email });
+      await addSuppression(db, evt.email, 'spam complaint');
+      await cancelSequencesForLead(db, lead.id, 'recipient complained');
+      await logEvent(db, 'complaint.recorded', lead.id, { email: evt.email });
       return { matched: true, leadId: lead.id, action: 'suppressed' };
     }
     case 'open': {
-      logEvent(db, 'open.recorded', lead.id, { email: evt.email });
+      await logEvent(db, 'open.recorded', lead.id, { email: evt.email });
       return { matched: true, leadId: lead.id, action: 'open-recorded' };
     }
   }

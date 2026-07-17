@@ -46,7 +46,7 @@ import {
   runSequencesJob,
 } from './stages.js';
 
-const ctx = createContext();
+const ctx = await createContext();
 const app = express();
 
 // Resend webhook FIRST, with the raw body preserved for signature checks.
@@ -74,8 +74,9 @@ app.post('/webhooks/resend', express.raw({ type: '*/*' }), (req, res) => {
   }
   const evt = parseResendWebhook(payload as Parameters<typeof parseResendWebhook>[0]);
   if (!evt) return res.json({ ok: true, ignored: true });
-  const result = handleInboundEvent(ctx.db, evt);
-  res.json({ ok: true, ...result });
+  handleInboundEvent(ctx.db, evt)
+    .then((result) => res.json({ ok: true, ...result }))
+    .catch((e) => res.status(500).json({ error: String(e) }));
 });
 
 app.use(express.json());
@@ -117,11 +118,11 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-function leadView(id: number) {
-  const lead = getLead(ctx.db, id);
+async function leadView(id: number) {
+  const lead = await getLead(ctx.db, id);
   if (!lead) return null;
-  const demo = getDemoByLead(ctx.db, id);
-  const message = getMessageByLead(ctx.db, id);
+  const demo = await getDemoByLead(ctx.db, id);
+  const message = await getMessageByLead(ctx.db, id);
   return {
     ...lead,
     audit: lead.audit_json ? JSON.parse(lead.audit_json) : null,
@@ -130,22 +131,28 @@ function leadView(id: number) {
   };
 }
 
-app.get('/api/leads', (_req, res) => {
-  const leads = listLeads(ctx.db).map((l) => leadView(l.id));
-  res.json(leads);
-});
+app.get(
+  '/api/leads',
+  wrap(async (_req, res) => {
+    const leads = await listLeads(ctx.db);
+    res.json(await Promise.all(leads.map((l) => leadView(l.id))));
+  }),
+);
 
-app.get('/api/leads/:id', (req, res) => {
-  const view = leadView(Number(req.params.id));
-  if (!view) return res.status(404).json({ error: 'not found' });
-  res.json({ ...view, events: listEvents(ctx.db, Number(req.params.id)) });
-});
+app.get(
+  '/api/leads/:id',
+  wrap(async (req, res) => {
+    const view = await leadView(Number(req.params.id));
+    if (!view) return res.status(404).json({ error: 'not found' });
+    res.json({ ...view, events: await listEvents(ctx.db, Number(req.params.id)) });
+  }),
+);
 
-app.get('/api/events', (_req, res) => res.json(listEvents(ctx.db)));
-app.get('/api/suppression', (_req, res) => res.json(listSuppression(ctx.db)));
+app.get('/api/events', wrap(async (_req, res) => res.json(await listEvents(ctx.db))));
+app.get('/api/suppression', wrap(async (_req, res) => res.json(await listSuppression(ctx.db))));
 
 // ── Phase 4: analytics + A/B ─────────────────────────────────────────────────
-app.get('/api/analytics', (_req, res) => res.json(computeAnalytics(ctx.db)));
+app.get('/api/analytics', wrap(async (_req, res) => res.json(await computeAnalytics(ctx.db))));
 
 // Human-only: record the winning variant (reporting never auto-promotes).
 app.post(
@@ -153,7 +160,7 @@ app.post(
   wrap(async (req, res) => {
     const winner = String(req.body?.winner ?? '');
     const by = String(req.body?.concludedBy ?? 'dashboard-user');
-    concludeExperiment(ctx.db, String(req.params.name), winner, by);
+    await concludeExperiment(ctx.db, String(req.params.name), winner, by);
     res.json({ ok: true });
   }),
 );
@@ -161,7 +168,7 @@ app.post(
 // 1px demo-view beacon (image-only tracking; templates stay script-free).
 const BEACON_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 app.get('/beacon/demo/:slug', (req, res) => {
-  recordDemoView(ctx.db, String(req.params.slug));
+  void recordDemoView(ctx.db, String(req.params.slug)).catch(() => undefined);
   res.type('image/gif').send(BEACON_GIF);
 });
 
@@ -199,7 +206,7 @@ app.post(
   '/api/leads/:id/approve',
   wrap(async (req, res) => {
     const by = req.body?.approvedBy ?? 'dashboard-user';
-    const message = approveLeadMessage(ctx, Number(req.params.id), by);
+    const message = await approveLeadMessage(ctx, Number(req.params.id), by);
     res.json({ ok: true, message });
   }),
 );
@@ -208,7 +215,7 @@ app.post(
   '/api/leads/:id/send',
   wrap(async (req, res) => {
     const dryRun = req.body?.dryRun === true;
-    const msg = getMessageByLead(ctx.db, Number(req.params.id));
+    const msg = await getMessageByLead(ctx.db, Number(req.params.id));
     if (!msg) return res.status(400).json({ error: 'no message for lead' });
     const outcome = await sendOneMessage(ctx, msg.id, { dryRun });
     res.json(outcome);
@@ -219,7 +226,7 @@ app.post(
 app.post(
   '/api/leads/:id/sequence',
   wrap(async (req, res) => {
-    const r = draftSequenceForLead(ctx, Number(req.params.id));
+    const r = await draftSequenceForLead(ctx, Number(req.params.id));
     res.json({ ok: true, sequence: r.sequence, messages: r.messages });
   }),
 );
@@ -229,7 +236,7 @@ app.post(
   '/api/sequences/:id/approve',
   wrap(async (req, res) => {
     const by = req.body?.approvedBy ?? 'dashboard-user';
-    const sequence = approveSequenceById(ctx, Number(req.params.id), by);
+    const sequence = await approveSequenceById(ctx, Number(req.params.id), by);
     res.json({ ok: true, sequence });
   }),
 );
@@ -255,9 +262,9 @@ app.post(
 app.post(
   '/api/leads/:id/call-script',
   wrap(async (req, res) => {
-    const lead = getLead(ctx.db, Number(req.params.id));
+    const lead = await getLead(ctx.db, Number(req.params.id));
     if (!lead) return res.status(404).json({ error: 'not found' });
-    const message = draftCallScript(ctx.db, ctx.config, lead);
+    const message = await draftCallScript(ctx.db, ctx.config, lead);
     res.json({ ok: true, message });
   }),
 );
@@ -265,9 +272,9 @@ app.post(
 app.post(
   '/api/leads/:id/sms',
   wrap(async (req, res) => {
-    const lead = getLead(ctx.db, Number(req.params.id));
+    const lead = await getLead(ctx.db, Number(req.params.id));
     if (!lead) return res.status(404).json({ error: 'not found' });
-    const sms = draftDemoSms(ctx.db, ctx.config, lead);
+    const sms = await draftDemoSms(ctx.db, ctx.config, lead);
     res.json({ ok: true, sms });
   }),
 );
@@ -278,7 +285,7 @@ app.post(
   wrap(async (req, res) => {
     const by = req.body?.approvedBy ?? 'dashboard-user';
     const basis = String(req.body?.tcpaBasis ?? '');
-    const sms = approveSms(ctx.db, Number(req.params.id), by, basis);
+    const sms = await approveSms(ctx.db, Number(req.params.id), by, basis);
     res.json({ ok: true, sms });
   }),
 );
@@ -297,7 +304,7 @@ app.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res)
   const from = String(req.body?.From ?? '');
   const text = String(req.body?.Body ?? '').trim().toUpperCase();
   if (from && ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(text)) {
-    recordSmsOptOut(ctx.db, from);
+    void recordSmsOptOut(ctx.db, from).catch(() => undefined);
   }
   res.type('text/xml').send('<Response></Response>');
 });
@@ -306,7 +313,7 @@ app.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res)
 app.post(
   '/api/leads/:id/proposal',
   wrap(async (req, res) => {
-    const lead = getLead(ctx.db, Number(req.params.id));
+    const lead = await getLead(ctx.db, Number(req.params.id));
     if (!lead) return res.status(404).json({ error: 'not found' });
     const proposal = await createProposal(ctx, lead);
     res.json({ ok: true, proposal });
@@ -316,24 +323,24 @@ app.post(
 app.post(
   '/api/leads/:id/domain-request',
   wrap(async (req, res) => {
-    const lead = getLead(ctx.db, Number(req.params.id));
+    const lead = await getLead(ctx.db, Number(req.params.id));
     if (!lead) return res.status(404).json({ error: 'not found' });
     const domain = String(req.body?.domain ?? '');
     const by = String(req.body?.requestedBy ?? 'dashboard-user');
-    const r = requestDomainPurchase(ctx.db, lead, domain, by);
+    const r = await requestDomainPurchase(ctx.db, lead, domain, by);
     res.json({ ok: true, ...r });
   }),
 );
 
 // The human clicks the approval link — this only RECORDS the decision.
-app.get('/approve/domain', (req, res) => {
+app.get('/approve/domain', async (req, res) => {
   const token = String(req.query.token ?? '');
   const decision = String(req.query.decision ?? '');
   if (!token || (decision !== 'approve' && decision !== 'decline')) {
     return res.status(400).send('Invalid approval link.');
   }
   try {
-    const r = decideDomainRequest(
+    const r = await decideDomainRequest(
       ctx.db,
       token,
       decision === 'approve' ? 'approved' : 'declined',
@@ -360,7 +367,7 @@ app.post(
     const reason = String(req.body?.reason ?? '');
     if (outcome !== 'won' && outcome !== 'lost')
       return res.status(400).json({ error: 'outcome must be won|lost' });
-    const lead = closeLead(ctx.db, Number(req.params.id), outcome, reason);
+    const lead = await closeLead(ctx.db, Number(req.params.id), outcome, reason);
     res.json({ ok: true, lead });
   }),
 );
@@ -375,20 +382,20 @@ app.post(
       'contacted', 'replied', 'won', 'lost',
     ];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'invalid status' });
-    const lead = setLeadStatus(ctx.db, Number(req.params.id), status);
+    const lead = await setLeadStatus(ctx.db, Number(req.params.id), status);
     res.json({ ok: true, lead });
   }),
 );
 
 // ── Public: one-click unsubscribe (CAN-SPAM) ─────────────────────────────────
-app.get('/unsubscribe', (req, res) => {
+app.get('/unsubscribe', async (req, res) => {
   const email = String(req.query.email ?? '');
   const token = String(req.query.token ?? '');
   if (!email || !verifyUnsubscribeToken(email, token)) {
     return res.status(400).send('Invalid unsubscribe link.');
   }
-  recordUnsubscribe(ctx.db, email);
-  cancelSequencesForEmail(ctx.db, email, 'recipient unsubscribed');
+  await recordUnsubscribe(ctx.db, email);
+  await cancelSequencesForEmail(ctx.db, email, 'recipient unsubscribed');
   res
     .status(200)
     .send(

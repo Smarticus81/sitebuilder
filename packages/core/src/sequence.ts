@@ -54,31 +54,30 @@ const FOLLOWUP_COPY: ((name: string, demoUrl: string) => { subject: string; body
  * follow-up drafts (status `draft`). Nothing here is sendable until a human
  * approves the sequence.
  */
-export function draftFollowupSequence(
+export async function draftFollowupSequence(
   db: DB,
   config: StorefrontConfig,
   lead: Lead,
-): { sequence: Sequence; messages: Message[] } {
+): Promise<{ sequence: Sequence; messages: Message[] }> {
   if (lead.status !== 'contacted') {
     throw new Error(`Lead ${lead.id} is ${lead.status}; follow-ups only apply to contacted leads`);
   }
   if (!lead.contact_email) throw new Error(`Lead ${lead.id} has no contact email`);
-  const sentBefore = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM messages
-       WHERE lead_id = ? AND channel = 'email' AND status = 'sent'`,
-    )
-    .get(lead.id) as { n: number };
+  const sentBefore = (await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM messages
+     WHERE lead_id = ? AND channel = 'email' AND status = 'sent'`,
+    [lead.id],
+  ))!;
   if (sentBefore.n === 0) {
     throw new Error(`Lead ${lead.id} has no sent initial outreach — nothing to follow up on`);
   }
-  const existing = getSequenceByLead(db, lead.id);
+  const existing = await getSequenceByLead(db, lead.id);
   if (existing && existing.status !== 'canceled') {
     throw new Error(`Lead ${lead.id} already has a ${existing.status} sequence`);
   }
 
   const spacing = Math.max(config.followupDays, MIN_SPACING_DAYS);
-  const sequence = insertSequence(db, {
+  const sequence = await insertSequence(db, {
     lead_id: lead.id,
     max_followups: MAX_FOLLOWUPS,
     spacing_days: spacing,
@@ -91,7 +90,7 @@ export function draftFollowupSequence(
       `${copy.body}\n${config.senderName}\n${config.senderBusiness}` +
       complianceFooter(config, lead.contact_email);
     messages.push(
-      insertMessage(db, {
+      await insertMessage(db, {
         lead_id: lead.id,
         channel: 'email',
         subject: copy.subject,
@@ -110,48 +109,52 @@ export function draftFollowupSequence(
  * each follow-up message approved (so checkSendGate's approval requirement is
  * satisfied by a real human action, per-message).
  */
-export function approveSequence(db: DB, sequenceId: number, approvedBy: string): Sequence {
-  const seq = getSequence(db, sequenceId);
+export async function approveSequence(
+  db: DB,
+  sequenceId: number,
+  approvedBy: string,
+): Promise<Sequence> {
+  const seq = await getSequence(db, sequenceId);
   if (!seq) throw new Error(`Sequence ${sequenceId} not found`);
   if (seq.status !== 'draft') throw new Error(`Sequence ${sequenceId} is ${seq.status}, cannot approve`);
-  for (const msg of listSequenceMessages(db, sequenceId)) {
+  for (const msg of await listSequenceMessages(db, sequenceId)) {
     if (msg.status === 'draft') {
-      updateMessageStatus(db, msg.id, 'approved', { approved_by: approvedBy });
+      await updateMessageStatus(db, msg.id, 'approved', { approved_by: approvedBy });
     }
   }
-  const updated = updateSequenceStatus(db, sequenceId, 'approved', { approved_by: approvedBy });
-  logEvent(db, 'sequence.approved', seq.lead_id, { sequence_id: sequenceId, approved_by: approvedBy });
+  const updated = await updateSequenceStatus(db, sequenceId, 'approved', { approved_by: approvedBy });
+  await logEvent(db, 'sequence.approved', seq.lead_id, { sequence_id: sequenceId, approved_by: approvedBy });
   return updated;
 }
 
 /** Cancel a sequence and void its unsent follow-ups. Idempotent. */
-export function cancelSequence(db: DB, sequenceId: number, reason: string): void {
-  const seq = getSequence(db, sequenceId);
+export async function cancelSequence(db: DB, sequenceId: number, reason: string): Promise<void> {
+  const seq = await getSequence(db, sequenceId);
   if (!seq || seq.status === 'canceled' || seq.status === 'completed') return;
-  for (const msg of listSequenceMessages(db, sequenceId)) {
+  for (const msg of await listSequenceMessages(db, sequenceId)) {
     if (msg.status === 'draft' || msg.status === 'approved') {
-      updateMessageStatus(db, msg.id, 'canceled');
+      await updateMessageStatus(db, msg.id, 'canceled');
     }
   }
-  updateSequenceStatus(db, sequenceId, 'canceled', { cancel_reason: reason });
-  logEvent(db, 'sequence.canceled', seq.lead_id, { sequence_id: sequenceId, reason });
+  await updateSequenceStatus(db, sequenceId, 'canceled', { cancel_reason: reason });
+  await logEvent(db, 'sequence.canceled', seq.lead_id, { sequence_id: sequenceId, reason });
 }
 
 /** Cancel any live sequence for a lead (reply/unsubscribe hooks call this). */
-export function cancelSequencesForLead(db: DB, leadId: number, reason: string): void {
-  for (const seq of listSequences(db)) {
+export async function cancelSequencesForLead(db: DB, leadId: number, reason: string): Promise<void> {
+  for (const seq of await listSequences(db)) {
     if (seq.lead_id === leadId && (seq.status === 'draft' || seq.status === 'approved')) {
-      cancelSequence(db, seq.id, reason);
+      await cancelSequence(db, seq.id, reason);
     }
   }
 }
 
 /** Cancel live sequences for every lead whose contact email matches. */
-export function cancelSequencesForEmail(db: DB, email: string, reason: string): void {
-  const rows = db
-    .prepare(`SELECT id FROM leads WHERE lower(contact_email) = ?`)
-    .all(email.toLowerCase().trim()) as { id: number }[];
-  for (const r of rows) cancelSequencesForLead(db, r.id, reason);
+export async function cancelSequencesForEmail(db: DB, email: string, reason: string): Promise<void> {
+  const rows = await db.all<{ id: number }>(`SELECT id FROM leads WHERE lower(contact_email) = ?`, [
+    email.toLowerCase().trim(),
+  ]);
+  for (const r of rows) await cancelSequencesForLead(db, r.id, reason);
 }
 
 export interface SequenceRunResult {
@@ -187,28 +190,28 @@ export async function runSequences(
     outcomes: [],
   };
 
-  for (const seq of listSequences(db, 'approved')) {
+  for (const seq of await listSequences(db, 'approved')) {
     result.examined++;
-    const lead = getLead(db, seq.lead_id);
+    const lead = await getLead(db, seq.lead_id);
     if (!lead) continue;
 
     // Auto-cancel conditions.
     if (lead.status === 'replied' || lead.status === 'won' || lead.status === 'lost') {
-      cancelSequence(db, seq.id, `lead status is ${lead.status}`);
+      await cancelSequence(db, seq.id, `lead status is ${lead.status}`);
       result.canceled++;
       continue;
     }
-    if (!lead.contact_email || isSuppressed(db, lead.contact_email)) {
-      cancelSequence(db, seq.id, 'recipient unsubscribed/suppressed');
+    if (!lead.contact_email || (await isSuppressed(db, lead.contact_email))) {
+      await cancelSequence(db, seq.id, 'recipient unsubscribed/suppressed');
       result.canceled++;
       continue;
     }
 
-    const steps = listSequenceMessages(db, seq.id);
+    const steps = await listSequenceMessages(db, seq.id);
     const unsent = steps.filter((m) => m.status === 'approved');
     if (unsent.length === 0) {
-      updateSequenceStatus(db, seq.id, 'completed');
-      logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id });
+      await updateSequenceStatus(db, seq.id, 'completed');
+      await logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id });
       result.completed++;
       continue;
     }
@@ -216,8 +219,8 @@ export async function runSequences(
     // Hard ceiling, independent of what's in the DB.
     const sentCount = steps.filter((m) => m.status === 'sent').length;
     if (sentCount >= Math.min(seq.max_followups, MAX_FOLLOWUPS)) {
-      updateSequenceStatus(db, seq.id, 'completed');
-      logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id, note: 'cap reached' });
+      await updateSequenceStatus(db, seq.id, 'completed');
+      await logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id, note: 'cap reached' });
       result.completed++;
       continue;
     }
@@ -225,14 +228,13 @@ export async function runSequences(
     const next = unsent[0]!;
     // Spacing: measured from the most recent SENT message to this lead
     // (initial outreach for step 1, previous follow-up for step 2).
-    const prevSentAt = db
-      .prepare(
-        `SELECT MAX(sent_at) AS t FROM messages
-         WHERE lead_id = ? AND status = 'sent' AND channel = 'email'`,
-      )
-      .get(seq.lead_id) as { t: string | null };
+    const prevSentAt = (await db.get<{ t: string | null }>(
+      `SELECT MAX(sent_at) AS t FROM messages
+       WHERE lead_id = ? AND status = 'sent' AND channel = 'email'`,
+      [seq.lead_id],
+    ))!;
     if (!prevSentAt.t) {
-      cancelSequence(db, seq.id, 'no prior sent message found');
+      await cancelSequence(db, seq.id, 'no prior sent message found');
       result.canceled++;
       continue;
     }
@@ -247,19 +249,19 @@ export async function runSequences(
     result.outcomes.push({ sequenceId: seq.id, step: next.followup_step ?? 0, outcome });
     if (outcome.sent) {
       result.sent++;
-      logEvent(db, 'sequence.step_sent', seq.lead_id, {
+      await logEvent(db, 'sequence.step_sent', seq.lead_id, {
         sequence_id: seq.id,
         step: next.followup_step,
         message_id: next.id,
       });
-      const remaining = listSequenceMessages(db, seq.id).filter((m) => m.status === 'approved');
+      const remaining = (await listSequenceMessages(db, seq.id)).filter((m) => m.status === 'approved');
       if (remaining.length === 0) {
-        updateSequenceStatus(db, seq.id, 'completed');
-        logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id });
+        await updateSequenceStatus(db, seq.id, 'completed');
+        await logEvent(db, 'sequence.completed', seq.lead_id, { sequence_id: seq.id });
         result.completed++;
       }
     } else if (!outcome.gate.ok && outcome.gate.reasons.some((r) => r.includes('suppression'))) {
-      cancelSequence(db, seq.id, 'blocked by suppression at send time');
+      await cancelSequence(db, seq.id, 'blocked by suppression at send time');
       result.canceled++;
     }
     // Cap-blocked or dry-run: leave the sequence approved; the next run retries.
