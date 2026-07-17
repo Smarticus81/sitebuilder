@@ -152,18 +152,22 @@ async function main() {
   // 3. Deliverability DNS (pre-send check): SPF / DKIM / DMARC on FROM_DOMAIN.
   console.log('\n── Deliverability (DNS) ─────────────────────────────────────');
   const fromDomain = env.FROM_DOMAIN?.trim() ?? '';
+  // DNS problems only BLOCK doctor when live sending is configured; in mock
+  // mode they're informational (nothing can reach the wire anyway).
+  const emailLive = (env.EMAIL_PROVIDER ?? 'mock') !== 'mock' && !!env.EMAIL_PROVIDER_API_KEY?.trim();
   if (!fromDomain || fromDomain.includes('example.com')) {
     console.log('  ◦ skipped — set a real FROM_DOMAIN to check SPF/DKIM/DMARC');
   } else {
     try {
       const dns = await checkDeliverabilityDns(fromDomain);
       for (const [name, c] of [['SPF', dns.spf], ['DKIM', dns.dkim], ['DMARC', dns.dmarc]] as const) {
-        console.log(`  ${c.ok ? '✓' : '✗'} ${name.padEnd(6)} ${c.note}`);
-        if (!c.ok) failures++;
+        const mark = c.ok ? '✓' : emailLive ? '✗' : '⚠';
+        console.log(`  ${mark} ${name.padEnd(6)} ${c.note}${!c.ok && !emailLive ? ' (blocking once EMAIL_PROVIDER goes live)' : ''}`);
+        if (!c.ok && emailLive) failures++;
       }
     } catch (err) {
-      console.log(`  ✗ DNS lookup failed: ${String(err).slice(0, 120)}`);
-      failures++;
+      console.log(`  ${emailLive ? '✗' : '⚠'} DNS lookup failed: ${String(err).slice(0, 120)}`);
+      if (emailLive) failures++;
     }
   }
 
