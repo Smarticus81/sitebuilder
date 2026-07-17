@@ -17,6 +17,10 @@ import {
   verifyUnsubscribeToken,
   recordUnsubscribe,
   cancelSequencesForEmail,
+  parseResendWebhook,
+  handleInboundEvent,
+  verifyResendSignature,
+  runUnpublishJob,
 } from '@storefront/core';
 import {
   prospect,
@@ -32,6 +36,36 @@ import {
 
 const ctx = createContext();
 const app = express();
+
+// Resend webhook FIRST, with the raw body preserved for signature checks.
+// (express.json() below would otherwise consume the stream.)
+app.post('/webhooks/resend', express.raw({ type: '*/*' }), (req, res) => {
+  const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body ?? '');
+  const secret = process.env.RESEND_WEBHOOK_SECRET?.trim();
+  if (secret) {
+    const ok = verifyResendSignature(
+      secret,
+      {
+        id: req.header('svix-id') ?? undefined,
+        timestamp: req.header('svix-timestamp') ?? undefined,
+        signature: req.header('svix-signature') ?? undefined,
+      },
+      raw,
+    );
+    if (!ok) return res.status(401).json({ error: 'invalid signature' });
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return res.status(400).json({ error: 'invalid JSON' });
+  }
+  const evt = parseResendWebhook(payload as Parameters<typeof parseResendWebhook>[0]);
+  if (!evt) return res.json({ ok: true, ignored: true });
+  const result = handleInboundEvent(ctx.db, evt);
+  res.json({ ok: true, ...result });
+});
+
 app.use(express.json());
 
 // Permissive CORS for the local Vite dashboard.
@@ -170,6 +204,14 @@ app.post(
   wrap(async (req, res) => {
     const dryRun = req.body?.dryRun === true;
     const r = await runSequencesJob(ctx, { dryRun });
+    res.json(r);
+  }),
+);
+
+app.post(
+  '/api/jobs/unpublish',
+  wrap(async (_req, res) => {
+    const r = await runUnpublishJob(ctx);
     res.json(r);
   }),
 );

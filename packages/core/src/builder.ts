@@ -35,8 +35,7 @@ export function templateFor(category: string | null): string {
 }
 
 function addDays(days: number): string {
-  const ms = Date.parse('2026-06-26T00:00:00Z') + days * 86_400_000;
-  return new Date(ms).toISOString();
+  return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
 /**

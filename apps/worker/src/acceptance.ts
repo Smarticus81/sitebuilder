@@ -217,7 +217,11 @@ async function run() {
   section('Phase B — follow-up sequencing (gated, spaced, auto-canceling)');
   await testSequencing(ctx);
 
-  // ── 11. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 11. Phase B: auto-unpublish + reply detection ──────────────────────────
+  section('Phase B — auto-unpublish job + reply/bounce detection');
+  await testUnpublishAndReplies(ctx);
+
+  // ── 12. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
@@ -348,6 +352,79 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
     check(`logged: ${t}`, seqEvents.has(t));
   }
+}
+
+/**
+ * Auto-unpublish: demos past their TTL are torn down (files removed, row kept
+ * with published=0) and logged. Reply/bounce/complaint fixtures drive the same
+ * handler the Resend webhook uses.
+ */
+async function testUnpublishAndReplies(ctx: ReturnType<typeof createContext>) {
+  const { runUnpublishJob, parseResendWebhook, handleInboundEvent, verifyResendSignature } =
+    await import('@storefront/core');
+  const { listEvents, isSuppressed, getLead } = await import('@storefront/db');
+
+  // TTLs are ~14 days out; nothing should be due today…
+  const early = await runUnpublishJob(ctx, {});
+  check('unpublish job is a no-op before any TTL expires', early.examined === 0);
+
+  // …but everything is due 15 days from now.
+  const publishedBefore = (ctx.db.prepare(`SELECT COUNT(*) n FROM demos WHERE published = 1`).get() as { n: number }).n;
+  const future = new Date(Date.now() + 15 * 86_400_000);
+  const late = await runUnpublishJob(ctx, { now: future });
+  check(
+    `TTL fires: all ${publishedBefore} published demos torn down`,
+    late.unpublished === publishedBefore && late.failed === 0,
+    `${late.unpublished}/${late.examined}`,
+  );
+  check('demo files are actually gone', !existsSync(resolve(process.cwd(), 'demos-out', 'taqueria-la-familia')));
+  check(
+    'demo rows survive with published=0 (history kept)',
+    (ctx.db.prepare(`SELECT COUNT(*) n FROM demos WHERE published = 0`).get() as { n: number }).n === publishedBefore,
+  );
+  check('logged: demo.unpublished', listEvents(ctx.db).some((e) => e.type === 'demo.unpublished'));
+
+  // Reply detection — fixture inbound events in the Resend wire format.
+  const taqueria = listLeads(ctx.db).find((l) => l.name.includes('Taqueria'))!;
+  const replyEvt = parseResendWebhook({
+    type: 'email.received',
+    data: { from: `Taqueria La Familia <${taqueria.contact_email}>`, subject: 'Re: your preview' },
+  });
+  check('inbound reply payload parses (display-name form)', replyEvt?.kind === 'reply' && replyEvt.email === taqueria.contact_email);
+  const replyRes = handleInboundEvent(ctx.db, replyEvt!);
+  check(
+    'reply flips the lead to replied + logs reply.received',
+    replyRes.matched &&
+      getLead(ctx.db, taqueria.id)!.status === 'replied' &&
+      listEvents(ctx.db, taqueria.id).some((e) => e.type === 'reply.received'),
+  );
+
+  const plumber = listLeads(ctx.db).find((l) => l.name.includes('Big Tex'))!;
+  const bounceEvt = parseResendWebhook({ type: 'email.bounced', data: { to: [plumber.contact_email!] } });
+  handleInboundEvent(ctx.db, bounceEvt!);
+  check(
+    'bounce suppresses the address permanently',
+    isSuppressed(ctx.db, plumber.contact_email!) &&
+      listEvents(ctx.db, plumber.id).some((e) => e.type === 'bounce.recorded'),
+  );
+
+  const unknown = handleInboundEvent(ctx.db, { kind: 'reply', email: 'stranger@nowhere.example' });
+  check('unmatched inbound addresses are logged, not crashed', !unknown.matched);
+
+  // Webhook signature verification (svix scheme).
+  const { createHmac } = await import('node:crypto');
+  const secret = 'whsec_' + Buffer.from('test-secret-key-32-bytes-long!!').toString('base64');
+  const body = JSON.stringify({ type: 'email.received', data: { from: 'a@b.c' } });
+  const id = 'msg_1';
+  const ts = '1700000000';
+  const sig = createHmac('sha256', Buffer.from(secret.slice(6), 'base64'))
+    .update(`${id}.${ts}.${body}`)
+    .digest('base64');
+  check(
+    'valid webhook signature accepted, tampered rejected',
+    verifyResendSignature(secret, { id, timestamp: ts, signature: `v1,${sig}` }, body) &&
+      !verifyResendSignature(secret, { id, timestamp: ts, signature: `v1,${sig}` }, body + 'x'),
+  );
 }
 
 /**

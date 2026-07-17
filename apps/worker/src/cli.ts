@@ -161,6 +161,13 @@ async function main() {
       }
       break;
     }
+    case 'unpublish': {
+      const ctx = banner();
+      const { runUnpublishJob } = await import('@storefront/core');
+      const r = await runUnpublishJob(ctx);
+      console.log(`✓ unpublish job: examined ${r.examined}, unpublished ${r.unpublished}, failed ${r.failed}`);
+      break;
+    }
     case 'status': {
       const ctx = banner();
       const leads = listLeads(ctx.db);
@@ -178,7 +185,7 @@ async function main() {
     default:
       fail(
         `Unknown command: ${cmd ?? '(none)'}\n` +
-          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | status',
+          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | unpublish | status',
       );
   }
 }
