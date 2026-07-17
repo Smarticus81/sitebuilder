@@ -213,7 +213,11 @@ async function run() {
     ),
   );
 
-  // ── 10. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 10. Phase B: follow-up sequencing ───────────────────────────────────────
+  section('Phase B — follow-up sequencing (gated, spaced, auto-canceling)');
+  await testSequencing(ctx);
+
+  // ── 11. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
@@ -242,6 +246,107 @@ async function run() {
   } else {
     console.log(`  ❌ ${failures} check(s) failed.\n`);
     process.exit(1);
+  }
+}
+
+/**
+ * Follow-up sequencing: drafts stay unsendable until a human approves the
+ * sequence; spacing (≥4 days) is enforced; every step passes checkSendGate;
+ * replies and unsubscribes auto-cancel; max 2 follow-ups, ever.
+ */
+async function testSequencing(ctx: ReturnType<typeof createContext>) {
+  const {
+    draftFollowupSequence, approveSequence, runSequences, MAX_FOLLOWUPS,
+  } = await import('@storefront/core');
+  const { listSequenceMessages, getSequence, addSuppression: suppress, setLeadStatus, listEvents } =
+    await import('@storefront/db');
+  const backdate = (leadId: number) =>
+    ctx.db
+      .prepare(`UPDATE messages SET sent_at = datetime('now', '-5 days') WHERE lead_id = ? AND status = 'sent'`)
+      .run(leadId);
+
+  const contacted = listLeads(ctx.db, 'contacted');
+  check('two contacted leads available for sequencing', contacted.length >= 2, `${contacted.length}`);
+  const [l1, l2] = contacted as [Lead, Lead];
+
+  // Draft: automation may prepare, never send.
+  const s1 = draftFollowupSequence(ctx.db, ctx.config, l1);
+  check('sequence drafted with exactly MAX_FOLLOWUPS steps', s1.messages.length === MAX_FOLLOWUPS && MAX_FOLLOWUPS === 2);
+  check('sequence spacing floor is ≥ 4 days', s1.sequence.spacing_days >= 4);
+  check(
+    'follow-up drafts carry the CAN-SPAM footer + demo link',
+    s1.messages.every(
+      (m) => m.body!.includes('unsubscribe?email=') && m.body!.includes(ctx.config.mailingAddress) && m.body!.includes(l1.demo_url!),
+    ),
+  );
+  const preApproveSend = await sendOneMessage(ctx, s1.messages[0]!.id, { dryRun: true });
+  check('unapproved follow-up is blocked by the send gate', !preApproveSend.gate.ok);
+  const r0 = await runSequences(ctx, {});
+  check('runner ignores unapproved sequences', r0.examined === 0 && r0.sent === 0);
+
+  // Human approves the sequence (Gate: explicit action).
+  approveSequence(ctx.db, s1.sequence.id, 'acceptance-operator');
+  check(
+    'approval marks sequence + steps approved with the approver recorded',
+    getSequence(ctx.db, s1.sequence.id)!.status === 'approved' &&
+      listSequenceMessages(ctx.db, s1.sequence.id).every((m) => m.status === 'approved' && m.approved_by === 'acceptance-operator'),
+  );
+
+  // Spacing: nothing is due immediately after the initial send.
+  const r1 = await runSequences(ctx, {});
+  check('spacing blocks a follow-up sent too soon', r1.sent === 0 && r1.skippedNotDue === 1);
+
+  // Backdate the initial send 5 days → step 1 becomes due and passes the gate.
+  backdate(l1.id);
+  const r2 = await runSequences(ctx, {});
+  check('due follow-up sends through checkSendGate', r2.sent === 1);
+
+  // Reply auto-cancels the rest.
+  setLeadStatus(ctx.db, l1.id, 'replied');
+  const r3 = await runSequences(ctx, {});
+  const s1After = getSequence(ctx.db, s1.sequence.id)!;
+  check(
+    'reply auto-cancels the sequence and voids the unsent step',
+    r3.canceled === 1 && s1After.status === 'canceled' &&
+      listSequenceMessages(ctx.db, s1.sequence.id).some((m) => m.status === 'canceled'),
+  );
+
+  // Full-completion path (fresh sequence on the same lead after cancel).
+  setLeadStatus(ctx.db, l1.id, 'contacted');
+  const s2 = draftFollowupSequence(ctx.db, ctx.config, freshLead(ctx, l1.id));
+  approveSequence(ctx.db, s2.sequence.id, 'acceptance-operator');
+  backdate(l1.id);
+  await runSequences(ctx, {});
+  backdate(l1.id);
+  const r4 = await runSequences(ctx, {});
+  check(
+    'sequence completes after exactly 2 follow-ups',
+    r4.completed === 1 &&
+      getSequence(ctx.db, s2.sequence.id)!.status === 'completed' &&
+      listSequenceMessages(ctx.db, s2.sequence.id).filter((m) => m.status === 'sent').length === 2,
+  );
+  let thirdErr = '';
+  try {
+    draftFollowupSequence(ctx.db, ctx.config, freshLead(ctx, l1.id));
+  } catch (e) {
+    thirdErr = (e as Error).message;
+  }
+  check('a third follow-up round cannot be drafted', thirdErr.includes('already has'));
+
+  // Unsubscribe/suppression auto-cancels before any send.
+  const s3 = draftFollowupSequence(ctx.db, ctx.config, l2);
+  approveSequence(ctx.db, s3.sequence.id, 'acceptance-operator');
+  suppress(ctx.db, l2.contact_email!, 'test: unsubscribed mid-sequence');
+  backdate(l2.id);
+  const r5 = await runSequences(ctx, {});
+  check(
+    'unsubscribe auto-cancels the sequence with zero sends',
+    r5.canceled === 1 && r5.sent === 0 && getSequence(ctx.db, s3.sequence.id)!.status === 'canceled',
+  );
+
+  const seqEvents = new Set(listEvents(ctx.db).map((e) => e.type));
+  for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
+    check(`logged: ${t}`, seqEvents.has(t));
   }
 }
 

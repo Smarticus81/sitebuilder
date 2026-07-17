@@ -19,7 +19,11 @@ import {
   approveMessage,
   sendApprovedMessage,
   getMessageByLead,
+  draftFollowupSequence,
+  approveSequence,
+  runSequences,
   type SendOutcome,
+  type SequenceRunResult,
 } from '@storefront/core';
 
 // ── Stage 1: Prospector ──────────────────────────────────────────────────────
@@ -165,6 +169,27 @@ export async function sendOneMessage(
 ) {
   if (!getMessage(ctx.db, messageId)) throw new Error(`Message ${messageId} not found`);
   return sendApprovedMessage(ctx, messageId, opts);
+}
+
+// ── Follow-up sequences (Phase 2) ────────────────────────────────────────────
+
+/** Draft (never send) a follow-up sequence for a contacted lead. */
+export function draftSequenceForLead(ctx: Context, leadId: number) {
+  const lead = requireLead(ctx, leadId);
+  return draftFollowupSequence(ctx.db, ctx.config, lead);
+}
+
+/** Human gate: approve a drafted sequence (and its follow-up messages). */
+export function approveSequenceById(ctx: Context, sequenceId: number, approvedBy: string) {
+  return approveSequence(ctx.db, sequenceId, approvedBy);
+}
+
+/** Scheduled runner: sends due follow-ups through the send gate. */
+export async function runSequencesJob(
+  ctx: Context,
+  opts: { dryRun?: boolean; now?: Date } = {},
+): Promise<SequenceRunResult> {
+  return runSequences(ctx, opts);
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

@@ -10,6 +10,8 @@ import type {
   Demo,
   Message,
   MessageStatus,
+  Sequence,
+  SequenceStatus,
   Suppression,
   ConfigRow,
   EventRow,
@@ -56,6 +58,16 @@ export function getDb(): DB {
 export function migrate(db: DB): void {
   const schema = readFileSync(resolve(here, 'schema.sql'), 'utf8');
   db.exec(schema);
+  // Additive migrations for databases created before these columns existed.
+  ensureColumn(db, 'messages', 'sequence_id', 'INTEGER REFERENCES sequences(id) ON DELETE SET NULL');
+  ensureColumn(db, 'messages', 'followup_step', 'INTEGER');
+}
+
+function ensureColumn(db: DB, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
 }
 
 /** Drop all data (used by `pnpm reset`). */
@@ -63,6 +75,7 @@ export function resetDb(db: DB): void {
   db.exec(`
     DELETE FROM events;
     DELETE FROM messages;
+    DELETE FROM sequences;
     DELETE FROM demos;
     DELETE FROM suppression;
     DELETE FROM leads;
@@ -222,21 +235,32 @@ export function updateDemo(db: DB, id: number, patch: Partial<Demo>): Demo {
 
 export function insertMessage(
   db: DB,
-  msg: Omit<Message, 'id' | 'created_at' | 'sent_at' | 'approved_by'> &
-    Partial<Pick<Message, 'sent_at' | 'approved_by'>>,
+  msg: Omit<
+    Message,
+    'id' | 'created_at' | 'sent_at' | 'approved_by' | 'sequence_id' | 'followup_step'
+  > &
+    Partial<Pick<Message, 'sent_at' | 'approved_by' | 'sequence_id' | 'followup_step'>>,
 ): Message {
   const info = db
     .prepare(
-      `INSERT INTO messages (lead_id, channel, subject, body, status, sent_at, approved_by)
-       VALUES (@lead_id, @channel, @subject, @body, @status, @sent_at, @approved_by)`,
+      `INSERT INTO messages (lead_id, channel, subject, body, status, sent_at, approved_by,
+        sequence_id, followup_step)
+       VALUES (@lead_id, @channel, @subject, @body, @status, @sent_at, @approved_by,
+        @sequence_id, @followup_step)`,
     )
     .run({
       sent_at: null,
       approved_by: null,
+      sequence_id: null,
+      followup_step: null,
       ...msg,
     });
   const row = getMessage(db, Number(info.lastInsertRowid))!;
-  logEvent(db, 'message.draft', row.lead_id, { message_id: row.id, subject: row.subject });
+  logEvent(db, 'message.draft', row.lead_id, {
+    message_id: row.id,
+    subject: row.subject,
+    ...(row.sequence_id ? { sequence_id: row.sequence_id, followup_step: row.followup_step } : {}),
+  });
   return row;
 }
 
@@ -277,6 +301,71 @@ export function countSentToday(db: DB): number {
     )
     .get() as { n: number };
   return row.n;
+}
+
+// ── Sequences (follow-ups) ───────────────────────────────────────────────────
+
+export function insertSequence(
+  db: DB,
+  seq: Pick<Sequence, 'lead_id' | 'max_followups' | 'spacing_days'>,
+): Sequence {
+  const info = db
+    .prepare(
+      `INSERT INTO sequences (lead_id, status, max_followups, spacing_days)
+       VALUES (@lead_id, 'draft', @max_followups, @spacing_days)`,
+    )
+    .run(seq);
+  const row = getSequence(db, Number(info.lastInsertRowid))!;
+  logEvent(db, 'sequence.drafted', row.lead_id, {
+    sequence_id: row.id,
+    max_followups: row.max_followups,
+    spacing_days: row.spacing_days,
+  });
+  return row;
+}
+
+export function getSequence(db: DB, id: number): Sequence | undefined {
+  return db.prepare(`SELECT * FROM sequences WHERE id = ?`).get(id) as
+    | Sequence
+    | undefined;
+}
+
+export function getSequenceByLead(db: DB, leadId: number): Sequence | undefined {
+  return db
+    .prepare(`SELECT * FROM sequences WHERE lead_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(leadId) as Sequence | undefined;
+}
+
+export function listSequences(db: DB, status?: SequenceStatus): Sequence[] {
+  if (status) {
+    return db
+      .prepare(`SELECT * FROM sequences WHERE status = ? ORDER BY id ASC`)
+      .all(status) as Sequence[];
+  }
+  return db.prepare(`SELECT * FROM sequences ORDER BY id ASC`).all() as Sequence[];
+}
+
+export function updateSequenceStatus(
+  db: DB,
+  id: number,
+  status: SequenceStatus,
+  extra?: Partial<Pick<Sequence, 'approved_by' | 'cancel_reason'>>,
+): Sequence {
+  db.prepare(
+    `UPDATE sequences SET status = @status,
+       approved_by = COALESCE(@approved_by, approved_by),
+       cancel_reason = COALESCE(@cancel_reason, cancel_reason),
+       updated_at = datetime('now')
+     WHERE id = @id`,
+  ).run({ id, status, approved_by: extra?.approved_by ?? null, cancel_reason: extra?.cancel_reason ?? null });
+  return getSequence(db, id)!;
+}
+
+/** Follow-up messages belonging to a sequence, in step order. */
+export function listSequenceMessages(db: DB, sequenceId: number): Message[] {
+  return db
+    .prepare(`SELECT * FROM messages WHERE sequence_id = ? ORDER BY followup_step ASC`)
+    .all(sequenceId) as Message[];
 }
 
 // ── Suppression ──────────────────────────────────────────────────────────────

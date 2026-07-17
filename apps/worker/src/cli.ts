@@ -8,6 +8,9 @@ import {
   draftAll,
   approveLeadMessage,
   sendAll,
+  draftSequenceForLead,
+  approveSequenceById,
+  runSequencesJob,
 } from './stages.js';
 
 type Flags = Record<string, string | boolean>;
@@ -128,6 +131,36 @@ async function main() {
       }
       break;
     }
+    case 'sequence': {
+      const ctx = banner();
+      const sub = positional[0];
+      if (sub === 'draft') {
+        const leadId = Number(positional[1]);
+        if (!leadId) return fail('usage: sequence draft <leadId>');
+        const r = draftSequenceForLead(ctx, leadId);
+        console.log(
+          `✓ drafted sequence ${r.sequence.id} for lead ${leadId} ` +
+            `(${r.messages.length} follow-ups, ≥${r.sequence.spacing_days}d apart)`,
+        );
+        console.log('  → GATE: approve with `sequence approve <sequenceId>` before anything can send.');
+      } else if (sub === 'approve') {
+        const seqId = Number(positional[1]);
+        if (!seqId) return fail('usage: sequence approve <sequenceId> [--by name]');
+        const who = String(flags.by ?? 'cli-operator');
+        const seq = approveSequenceById(ctx, seqId, who);
+        console.log(`✓ sequence ${seq.id} approved by ${who} (sends still gate-checked + spaced)`);
+      } else if (sub === 'run') {
+        const dryRun = flags['dry-run'] === true || flags.dry === true;
+        const r = await runSequencesJob(ctx, { dryRun });
+        console.log(
+          `${dryRun ? '[DRY RUN] ' : ''}sequences: examined ${r.examined}, sent ${r.sent}, ` +
+            `not-due ${r.skippedNotDue}, canceled ${r.canceled}, completed ${r.completed}`,
+        );
+      } else {
+        return fail('usage: sequence draft <leadId> | sequence approve <sequenceId> | sequence run [--dry-run]');
+      }
+      break;
+    }
     case 'status': {
       const ctx = banner();
       const leads = listLeads(ctx.db);
@@ -145,7 +178,7 @@ async function main() {
     default:
       fail(
         `Unknown command: ${cmd ?? '(none)'}\n` +
-          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | status',
+          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | status',
       );
   }
 }

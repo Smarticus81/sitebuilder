@@ -12,7 +12,8 @@ export type LeadStatus =
 
 export type Segment = 'none' | 'bad';
 export type MessageChannel = 'email' | 'call_script';
-export type MessageStatus = 'draft' | 'approved' | 'sent' | 'bounced';
+export type MessageStatus = 'draft' | 'approved' | 'sent' | 'bounced' | 'canceled';
+export type SequenceStatus = 'draft' | 'approved' | 'completed' | 'canceled';
 
 export interface Lead {
   id: number;
@@ -59,7 +60,21 @@ export interface Message {
   status: MessageStatus;
   sent_at: string | null;
   approved_by: string | null;
+  sequence_id: number | null;
+  followup_step: number | null;
   created_at: string;
+}
+
+export interface Sequence {
+  id: number;
+  lead_id: number;
+  status: SequenceStatus;
+  approved_by: string | null;
+  cancel_reason: string | null;
+  max_followups: number;
+  spacing_days: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Suppression {

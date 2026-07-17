@@ -11,3 +11,4 @@ export * from './builder.js';
 export * from './compliance.js';
 export * from './outreach.js';
 export * from './sender.js';
+export * from './sequence.js';

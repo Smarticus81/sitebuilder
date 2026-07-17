@@ -16,6 +16,7 @@ import {
   adapterModes,
   verifyUnsubscribeToken,
   recordUnsubscribe,
+  cancelSequencesForEmail,
 } from '@storefront/core';
 import {
   prospect,
@@ -24,6 +25,9 @@ import {
   draftOne,
   approveLeadMessage,
   sendOneMessage,
+  draftSequenceForLead,
+  approveSequenceById,
+  runSequencesJob,
 } from './stages.js';
 
 const ctx = createContext();
@@ -142,6 +146,34 @@ app.post(
   }),
 );
 
+// ── Follow-up sequences (Phase 2) ────────────────────────────────────────────
+app.post(
+  '/api/leads/:id/sequence',
+  wrap(async (req, res) => {
+    const r = draftSequenceForLead(ctx, Number(req.params.id));
+    res.json({ ok: true, sequence: r.sequence, messages: r.messages });
+  }),
+);
+
+// Human gate: approving a sequence is an explicit operator action.
+app.post(
+  '/api/sequences/:id/approve',
+  wrap(async (req, res) => {
+    const by = req.body?.approvedBy ?? 'dashboard-user';
+    const sequence = approveSequenceById(ctx, Number(req.params.id), by);
+    res.json({ ok: true, sequence });
+  }),
+);
+
+app.post(
+  '/api/jobs/run-sequences',
+  wrap(async (req, res) => {
+    const dryRun = req.body?.dryRun === true;
+    const r = await runSequencesJob(ctx, { dryRun });
+    res.json(r);
+  }),
+);
+
 // ── Tracker: manual status update ────────────────────────────────────────────
 app.post(
   '/api/leads/:id/status',
@@ -165,6 +197,7 @@ app.get('/unsubscribe', (req, res) => {
     return res.status(400).send('Invalid unsubscribe link.');
   }
   recordUnsubscribe(ctx.db, email);
+  cancelSequencesForEmail(ctx.db, email, 'recipient unsubscribed');
   res
     .status(200)
     .send(

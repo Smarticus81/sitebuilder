@@ -39,16 +39,19 @@ CREATE TABLE IF NOT EXISTS demos (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-  channel     TEXT NOT NULL CHECK (channel IN ('email', 'call_script')),
-  subject     TEXT,
-  body        TEXT,
-  -- draft → approved → sent | bounced
-  status      TEXT NOT NULL DEFAULT 'draft',
-  sent_at     TEXT,
-  approved_by TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id       INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  channel       TEXT NOT NULL CHECK (channel IN ('email', 'call_script')),
+  subject       TEXT,
+  body          TEXT,
+  -- draft → approved → sent | bounced | canceled
+  status        TEXT NOT NULL DEFAULT 'draft',
+  sent_at       TEXT,
+  approved_by   TEXT,
+  -- follow-up bookkeeping (NULL for the initial outreach message)
+  sequence_id   INTEGER REFERENCES sequences(id) ON DELETE SET NULL,
+  followup_step INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Permanent suppression list. Checked before EVERY send.
@@ -86,3 +89,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_lead  ON messages(lead_id);
 CREATE INDEX IF NOT EXISTS idx_demos_lead     ON demos(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_lead    ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
+
+-- Follow-up sequences (Phase 2). A sequence is DRAFTED by automation but only
+-- becomes sendable after explicit human approval. Hard limits live in code:
+-- max 2 follow-ups, minimum spacing between sends, auto-cancel on
+-- reply/unsubscribe. Every step still passes checkSendGate() at send time.
+CREATE TABLE IF NOT EXISTS sequences (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id       INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  -- draft → approved → completed | canceled
+  status        TEXT NOT NULL DEFAULT 'draft',
+  approved_by   TEXT,
+  cancel_reason TEXT,
+  max_followups INTEGER NOT NULL DEFAULT 2,
+  spacing_days  INTEGER NOT NULL DEFAULT 4,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sequences_lead   ON sequences(lead_id);
+CREATE INDEX IF NOT EXISTS idx_sequences_status ON sequences(status);
