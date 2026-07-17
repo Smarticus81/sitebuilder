@@ -39,16 +39,19 @@ CREATE TABLE IF NOT EXISTS demos (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-  channel     TEXT NOT NULL CHECK (channel IN ('email', 'call_script')),
-  subject     TEXT,
-  body        TEXT,
-  -- draft → approved → sent | bounced
-  status      TEXT NOT NULL DEFAULT 'draft',
-  sent_at     TEXT,
-  approved_by TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id       INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  channel       TEXT NOT NULL CHECK (channel IN ('email', 'call_script')),
+  subject       TEXT,
+  body          TEXT,
+  -- draft → approved → sent | bounced | canceled
+  status        TEXT NOT NULL DEFAULT 'draft',
+  sent_at       TEXT,
+  approved_by   TEXT,
+  -- follow-up bookkeeping (NULL for the initial outreach message)
+  sequence_id   INTEGER REFERENCES sequences(id) ON DELETE SET NULL,
+  followup_step INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Permanent suppression list. Checked before EVERY send.
@@ -86,3 +89,103 @@ CREATE INDEX IF NOT EXISTS idx_messages_lead  ON messages(lead_id);
 CREATE INDEX IF NOT EXISTS idx_demos_lead     ON demos(lead_id);
 CREATE INDEX IF NOT EXISTS idx_events_lead    ON events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
+
+-- Follow-up sequences (Phase 2). A sequence is DRAFTED by automation but only
+-- becomes sendable after explicit human approval. Hard limits live in code:
+-- max 2 follow-ups, minimum spacing between sends, auto-cancel on
+-- reply/unsubscribe. Every step still passes checkSendGate() at send time.
+CREATE TABLE IF NOT EXISTS sequences (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id       INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  -- draft → approved → completed | canceled
+  status        TEXT NOT NULL DEFAULT 'draft',
+  approved_by   TEXT,
+  cancel_reason TEXT,
+  max_followups INTEGER NOT NULL DEFAULT 2,
+  spacing_days  INTEGER NOT NULL DEFAULT 4,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sequences_lead   ON sequences(lead_id);
+CREATE INDEX IF NOT EXISTS idx_sequences_status ON sequences(status);
+
+-- SMS outreach (Phase 3, none-segment "text the demo"). Separate channel with
+-- its OWN approval gate. TCPA in code: approval requires a documented consent
+-- basis, bodies must carry STOP language, quiet hours + daily cap + permanent
+-- phone suppression are enforced in checkSmsGate.
+CREATE TABLE IF NOT EXISTS sms_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  to_phone    TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  -- draft → approved → sent | canceled
+  status      TEXT NOT NULL DEFAULT 'draft',
+  -- REQUIRED at approval: documented opt-in or human-confirmed prior
+  -- business relationship (TCPA basis). Never auto-filled.
+  tcpa_basis  TEXT,
+  approved_by TEXT,
+  sent_at     TEXT,
+  provider_id TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sms_lead   ON sms_messages(lead_id);
+CREATE INDEX IF NOT EXISTS idx_sms_status ON sms_messages(status);
+
+-- Permanent SMS opt-out list (STOP replies land here). Checked on every send.
+CREATE TABLE IF NOT EXISTS sms_suppression (
+  phone      TEXT PRIMARY KEY,
+  reason     TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Close/convert (Phase 3). A proposal packages the demo + pricing + a Stripe
+-- payment link. Payment links let the CUSTOMER choose to pay — the system
+-- never charges anyone autonomously.
+CREATE TABLE IF NOT EXISTS proposals (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id          INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  slug             TEXT NOT NULL,
+  url              TEXT,
+  payment_link_url TEXT,
+  payment_link_id  TEXT,
+  price_cents      INTEGER NOT NULL,
+  monthly_cents    INTEGER,
+  currency         TEXT NOT NULL DEFAULT 'usd',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_lead ON proposals(lead_id);
+
+-- Domain purchase REQUESTS. The system only generates an approval link; a
+-- human clicks approve/decline. Nothing here ever buys a domain.
+CREATE TABLE IF NOT EXISTS domain_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id      INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  domain       TEXT NOT NULL,
+  -- requested → approved | declined  (all decisions are human actions)
+  status       TEXT NOT NULL DEFAULT 'requested',
+  token        TEXT NOT NULL UNIQUE,
+  requested_by TEXT,
+  decided_by   TEXT,
+  decided_at   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_domain_requests_lead ON domain_requests(lead_id);
+
+-- A/B testing (Phase 4). Assignment is deterministic and LOGGED; a winner is
+-- only ever adopted by explicit human conclusion — never auto-promoted.
+CREATE TABLE IF NOT EXISTS ab_assignments (
+  experiment TEXT NOT NULL,
+  lead_id    INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  variant    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (experiment, lead_id)
+);
+
+CREATE TABLE IF NOT EXISTS experiments (
+  name         TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,          -- 'subject' | 'template'
+  variants     TEXT NOT NULL,          -- JSON array of variant names
+  winner       TEXT,                   -- set ONLY by a human conclusion
+  concluded_by TEXT,
+  concluded_at TEXT
+);

@@ -1,5 +1,5 @@
 import type { Lead, Segment, WebsiteAudit } from '@storefront/db';
-import { auditWebsite } from './audit.js';
+import { auditWebsite, createAuditProvider, type AuditProvider } from './audit.js';
 import { scrapeContactEmail } from './email-scrape.js';
 
 export interface QualifyResult {
@@ -47,6 +47,7 @@ function score(lead: Lead, noRealSite: boolean, emailFound: boolean): number {
 export async function qualifyLead(
   lead: Lead,
   env: NodeJS.ProcessEnv = process.env,
+  auditProvider: AuditProvider = createAuditProvider(env),
 ): Promise<QualifyResult> {
   // No real website → 'none'. Still try to scrape an email if a social URL exists.
   if (!lead.website_url || isSocialOnly(lead.website_url)) {
@@ -62,7 +63,7 @@ export async function qualifyLead(
     };
   }
 
-  const audit = await auditWebsite(lead.website_url, env);
+  const audit = await auditWebsite(lead.website_url, env, auditProvider);
   if (audit.verdict === 'good') {
     return {
       decision: 'drop',

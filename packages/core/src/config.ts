@@ -1,4 +1,5 @@
 import { getConfigRow, upsertConfig, type DB } from '@storefront/db';
+import { effectiveDailyCap } from './deliverability.js';
 
 /** Resolved sender identity + pipeline policy. */
 export interface StorefrontConfig {
@@ -22,19 +23,23 @@ const num = (v: string | undefined, fallback: number): number => {
  * Load config from env, persisting it into the DB `config` row so the dashboard
  * and audit log have a stable source of truth. Env always wins on (re)load.
  */
-export function loadConfig(db: DB, env: NodeJS.ProcessEnv = process.env): StorefrontConfig {
+export async function loadConfig(
+  db: DB,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<StorefrontConfig> {
   const cfg: StorefrontConfig = {
     senderName: env.SENDER_NAME ?? 'Unknown Sender',
     senderBusiness: env.SENDER_BUSINESS ?? 'Storefront Web Studio',
     mailingAddress: env.MAILING_ADDRESS ?? '',
     replyTo: env.REPLY_TO ?? '',
     fromDomain: env.FROM_DOMAIN ?? 'outreach.example.com',
-    dailySendCap: num(env.DAILY_SEND_CAP, 15),
+    // Warm-up ramp can only LOWER the configured cap, never raise it.
+    dailySendCap: effectiveDailyCap(num(env.DAILY_SEND_CAP, 15), env),
     followupDays: num(env.FOLLOWUP_DAYS, 4),
     demoTtlDays: num(env.DEMO_TTL_DAYS, 14),
     demoBaseDomain: env.DEMO_BASE_DOMAIN ?? 'demo.example.com',
   };
-  upsertConfig(db, {
+  await upsertConfig(db, {
     sender_name: cfg.senderName,
     sender_business: cfg.senderBusiness,
     mailing_address: cfg.mailingAddress,
@@ -48,8 +53,8 @@ export function loadConfig(db: DB, env: NodeJS.ProcessEnv = process.env): Storef
 }
 
 /** Read persisted config back out of the DB (used by the API server). */
-export function readConfig(db: DB): StorefrontConfig | null {
-  const row = getConfigRow(db);
+export async function readConfig(db: DB): Promise<StorefrontConfig | null> {
+  const row = await getConfigRow(db);
   if (!row) return null;
   return {
     senderName: row.sender_name ?? '',

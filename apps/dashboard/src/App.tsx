@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { api, type Lead, type Health, type LeadStatus } from './api.js';
+import { api, AuthRequiredError, setSessionToken, type Lead, type Health, type LeadStatus } from './api.js';
 
 const STATUS_COLORS: Record<LeadStatus, string> = {
   discovered: 'bg-white/5 text-white/50 border-white/10',
@@ -26,15 +26,20 @@ export default function App() {
   const [location, setLocation] = useState('Fort Worth, TX');
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
 
   const refresh = useCallback(async () => {
     const [h, l] = await Promise.all([api.health(), api.leads()]);
     setHealth(h);
     setLeads(l);
+    setNeedsLogin(false);
   }, []);
 
   useEffect(() => {
-    refresh().catch((e) => setToast(String(e)));
+    refresh().catch((e) => {
+      if (e instanceof AuthRequiredError) setNeedsLogin(true);
+      else setToast(String(e));
+    });
   }, [refresh]);
 
   const selected = leads.find((l) => l.id === selectedId) ?? null;
@@ -54,6 +59,10 @@ export default function App() {
 
   const counts = ALL_STATUSES.map((s) => ({ s, n: leads.filter((l) => l.status === s).length }));
 
+  if (needsLogin) {
+    return <Login onSuccess={() => refresh().catch((e) => setToast(String(e)))} />;
+  }
+
   return (
     <div className="relative min-h-screen text-[#e6e8ef]">
       {/* ambient background */}
@@ -70,6 +79,9 @@ export default function App() {
             <span className="text-lg font-extrabold tracking-tight">Storefront</span>
           </Link>
           <span className="text-xs text-white/35">{health?.config.senderBusiness}</span>
+          <Link to="/analytics" className="rounded-lg bg-white/8 px-2.5 py-1 text-xs text-white/70 transition hover:bg-white/12">
+            analytics
+          </Link>
         </div>
         <div className="flex items-center gap-2 text-xs">
           {health &&
@@ -342,6 +354,55 @@ function Detail({
         </select>
       </div>
     </motion.div>
+  );
+}
+
+function Login({ onSuccess }: { onSuccess: () => void }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      setSessionToken(null);
+      await api.login(password);
+      onSuccess();
+    } catch {
+      setError('Wrong password.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="grid min-h-screen place-items-center bg-ink text-[#e6e8ef]">
+      <form onSubmit={submit} className="glass w-80 space-y-3 rounded-2xl p-6">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-teal-300 to-teal-600 text-sm font-black text-ink neon-ring">S</span>
+          <span className="text-lg font-extrabold tracking-tight">Storefront</span>
+        </div>
+        <p className="text-xs text-white/50">Operator sign-in</p>
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="password"
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/30 outline-none transition focus:border-teal-400/50"
+        />
+        {error && <div className="text-xs text-red-300">{error}</div>}
+        <button
+          type="submit"
+          disabled={busy || !password}
+          className="w-full rounded-lg bg-teal-400 px-4 py-2 text-sm font-semibold text-ink transition hover:bg-teal-300 disabled:opacity-50"
+        >
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </div>
   );
 }
 

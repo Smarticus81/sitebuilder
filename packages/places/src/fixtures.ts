@@ -205,3 +205,89 @@ export const FORT_WORTH_SALONS: PlaceResult[] = [
     hours: [],
   },
 ];
+
+// Phase 2 fixture set — one bad-site business per additional industry template,
+// so `prospect --category restaurant/plumber/auto repair/med spa` exercises
+// every theme offline.
+export const FORT_WORTH_MIXED: PlaceResult[] = [
+  {
+    placeId: 'mock_la_familia',
+    name: 'Taqueria La Familia',
+    category: 'restaurant',
+    address: '3311 Hemphill St, Fort Worth, TX 76110',
+    phone: '(817) 555-0521',
+    lat: 32.7093,
+    lng: -97.3382,
+    website: 'http://lafamiliatacosfw.com', // bad: http, stale
+    rating: 4.8,
+    reviewCount: 402,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_familia_1', 'photo_familia_2', 'photo_familia_3'],
+    topReviews: [
+      'Best barbacoa in Fort Worth, hands down. Weekend menudo is a must.',
+      'Family-run and it shows — handmade tortillas every morning.',
+      'Cash-friendly, fast, and the salsa verde is dangerous.',
+    ],
+    hours: ['Tue–Sun 7–3', 'Mon closed'],
+  },
+  {
+    placeId: 'mock_big_tex_plumbing',
+    name: 'Big Tex Plumbing Co.',
+    category: 'plumber',
+    address: '7420 Camp Bowie W Blvd, Fort Worth, TX 76116',
+    phone: '(817) 555-0654',
+    lat: 32.7202,
+    lng: -97.4522,
+    website: 'http://bigtexplumbingfw.com', // bad: http, no viewport
+    rating: 4.7,
+    reviewCount: 167,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_bigtex_1', 'photo_bigtex_2'],
+    topReviews: [
+      'Showed up same day, quoted a fair price, and stuck to it.',
+      'Fixed our slab leak fast and left the yard cleaner than they found it.',
+      'Honest guys — told us the cheap fix instead of upselling.',
+    ],
+    hours: ['Mon–Sat 7–7', 'Sun emergency only'],
+  },
+  {
+    placeId: 'mock_precision_auto',
+    name: 'Precision Auto Care',
+    category: 'car_repair',
+    address: '5601 E Lancaster Ave, Fort Worth, TX 76112',
+    phone: '(817) 555-0733',
+    lat: 32.7429,
+    lng: -97.2621,
+    website: 'http://precisionautofw.com', // bad: stale copyright, slow
+    rating: 4.6,
+    reviewCount: 289,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_precision_1', 'photo_precision_2', 'photo_precision_3'],
+    topReviews: [
+      'They show you the old part and explain what failed. Zero pressure.',
+      'Quoted half of what the dealership wanted for my brakes.',
+      'In and out for an inspection in twenty minutes.',
+    ],
+    hours: ['Mon–Fri 8–6', 'Sat 8–2', 'Sun closed'],
+  },
+  {
+    placeId: 'mock_radiance_medspa',
+    name: 'Radiance Med Spa',
+    category: 'med_spa',
+    address: '4900 Overton Ridge Blvd, Fort Worth, TX 76132',
+    phone: '(817) 555-0811',
+    lat: 32.6801,
+    lng: -97.4143,
+    website: 'http://radiancemedspafw.com', // bad: http, no viewport, stale
+    rating: 4.9,
+    reviewCount: 122,
+    businessStatus: 'OPERATIONAL',
+    photoRefs: ['photo_radiance_1', 'photo_radiance_2'],
+    topReviews: [
+      'The nurses explain everything and never rush you into treatments.',
+      'Subtle, natural results — exactly what I asked for.',
+      'Spotless space and they follow up after every appointment.',
+    ],
+    hours: ['Tue–Fri 9–6', 'Sat 9–3', 'Sun–Mon closed'],
+  },
+];

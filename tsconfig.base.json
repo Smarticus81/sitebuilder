@@ -15,9 +15,12 @@
     "baseUrl": ".",
     "paths": {
       "@storefront/db": ["packages/db/src/index.ts"],
+      "@storefront/net": ["packages/net/src/index.ts"],
       "@storefront/places": ["packages/places/src/index.ts"],
       "@storefront/llm": ["packages/llm/src/index.ts"],
       "@storefront/email": ["packages/email/src/index.ts"],
+      "@storefront/sms": ["packages/sms/src/index.ts"],
+      "@storefront/payments": ["packages/payments/src/index.ts"],
       "@storefront/core": ["packages/core/src/index.ts"],
       "@storefront/core/*": ["packages/core/src/*"]
     }

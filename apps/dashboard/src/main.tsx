@@ -7,6 +7,7 @@ import './index.css';
 // so visiting /app never downloads the WebGL bundle, and vice-versa.
 const Landing = lazy(() => import('./Landing.js'));
 const App = lazy(() => import('./App.js'));
+const Analytics = lazy(() => import('./Analytics.js'));
 
 function Loader() {
   return (
@@ -23,6 +24,7 @@ createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/app" element={<App />} />
+          <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </Suspense>
     </BrowserRouter>

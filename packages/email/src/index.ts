@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fetchWithRetry, type NetLogger } from '@storefront/net';
 
 export interface EmailMessage {
   to: string;
@@ -9,6 +10,12 @@ export interface EmailMessage {
   text: string;
   html?: string;
   headers?: Record<string, string>; // e.g. List-Unsubscribe
+  /**
+   * Stable key per logical message (e.g. "msg-42"). Lets the provider retry a
+   * send on transient failure WITHOUT risking a duplicate email. Sends with no
+   * key are never retried.
+   */
+  idempotencyKey?: string;
 }
 
 export interface SendResult {
@@ -45,33 +52,44 @@ export class MockEmailProvider implements EmailProvider {
 export class ResendEmailProvider implements EmailProvider {
   readonly mode = 'live' as const;
   readonly name = 'resend';
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly log?: NetLogger,
+  ) {}
 
   async send(msg: EmailMessage): Promise<SendResult> {
     try {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+      const res = await fetchWithRetry(
+        'https://api.resend.com/emails',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            ...(msg.idempotencyKey ? { 'Idempotency-Key': msg.idempotencyKey } : {}),
+          },
+          body: JSON.stringify({
+            from: msg.from,
+            to: msg.to,
+            reply_to: msg.replyTo,
+            subject: msg.subject,
+            text: msg.text,
+            html: msg.html,
+            headers: msg.headers,
+          }),
         },
-        body: JSON.stringify({
-          from: msg.from,
-          to: msg.to,
-          reply_to: msg.replyTo,
-          subject: msg.subject,
-          text: msg.text,
-          html: msg.html,
-          headers: msg.headers,
-        }),
-      });
+        {
+          service: 'email',
+          log: this.log,
+          // A duplicated send is worse than a failed one: only retry when the
+          // Idempotency-Key makes the request safe to repeat.
+          retryable: !!msg.idempotencyKey,
+        },
+      );
       if (!res.ok) {
-        return {
-          ok: false,
-          id: '',
-          provider: 'resend',
-          error: `${res.status} ${await res.text()}`,
-        };
+        const body = (await res.text().catch(() => '')).slice(0, 300);
+        this.log?.('adapter.error', { service: 'email', status: res.status, body });
+        return { ok: false, id: '', provider: 'resend', error: `${res.status} ${body}` };
       }
       const data = (await res.json()) as { id: string };
       return { ok: true, id: data.id, provider: 'resend' };
@@ -83,10 +101,11 @@ export class ResendEmailProvider implements EmailProvider {
 
 export function createEmailProvider(
   env: NodeJS.ProcessEnv = process.env,
+  log?: NetLogger,
 ): EmailProvider {
   const provider = (env.EMAIL_PROVIDER ?? 'mock').toLowerCase();
   const key = env.EMAIL_PROVIDER_API_KEY?.trim();
-  if (provider === 'resend' && key) return new ResendEmailProvider(key);
+  if (provider === 'resend' && key) return new ResendEmailProvider(key, log);
   // postmark / ses can be added here following the same interface.
   return new MockEmailProvider();
 }

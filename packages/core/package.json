@@ -11,6 +11,9 @@
     "@storefront/db": "workspace:*",
     "@storefront/email": "workspace:*",
     "@storefront/llm": "workspace:*",
-    "@storefront/places": "workspace:*"
+    "@storefront/places": "workspace:*",
+    "@storefront/net": "workspace:*",
+    "@storefront/sms": "workspace:*",
+    "@storefront/payments": "workspace:*"
   }
 }

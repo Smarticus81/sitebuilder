@@ -11,8 +11,10 @@ import type { LlmProvider } from '@storefront/llm';
 import type { PlacesProvider, PlaceResult } from '@storefront/places';
 import type { StorefrontConfig } from './config.js';
 import type { DeployProvider } from './deploy.js';
-import { renderSalonTemplate, type TemplateData } from './template.js';
+import { renderTemplate, templateKeyFor, THEMES, type TemplateData } from './template.js';
 import { slugify, subdomainFor } from './slug.js';
+import { assignVariant } from './ab.js';
+import { publicBaseUrl } from './compliance.js';
 
 export interface BuildDeps {
   db: DB;
@@ -29,14 +31,13 @@ export function cityFrom(address: string | null): string {
   return parts.length >= 2 ? parts[parts.length - 2]! : parts[0]!;
 }
 
-/** Choose a template by category. Phase 1 ships one (salon/barber). */
+/** Choose a template by category (Phase 2: five industry templates). */
 export function templateFor(category: string | null): string {
-  return 'salon-barber';
+  return templateKeyFor(category);
 }
 
 function addDays(days: number): string {
-  const ms = Date.parse('2026-06-26T00:00:00Z') + days * 86_400_000;
-  return new Date(ms).toISOString();
+  return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
 /**
@@ -55,11 +56,15 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
   const photos = (place?.photoRefs ?? []).map((ref) => places.photoUrl(ref));
   const hours = place?.hours ?? [];
 
+  const templateKey = templateFor(lead.category);
+  const theme = THEMES[templateKey]!;
   const copy = await llm.demoCopy({
     name: lead.name,
     category: lead.category ?? 'hair_salon',
     city,
     reviews,
+    services: theme.defaultServices,
+    industryHint: theme.reviewMiningHint,
   });
 
   const slug = slugify(lead.name);
@@ -81,14 +86,17 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
     reviewCount: lead.review_count,
     reviews,
     demoFooter: `Demo preview prepared by ${config.senderBusiness} · not affiliated with ${lead.name} · this is a temporary preview`,
+    beaconUrl: `${publicBaseUrl()}/beacon/demo/${slug}`,
   };
 
-  const html = renderSalonTemplate(data);
+  // A/B: template accent variant — assignment stable per lead, audit-logged.
+  const accentVariant = await assignVariant(db, 'template-accent', lead.id);
+  const html = renderTemplate(templateKey, data, { accentVariant });
   const { url, provider } = await deploy.deploy({ slug, subdomain, html });
 
-  const demo = insertDemo(db, {
+  const demo = await insertDemo(db, {
     lead_id: lead.id,
-    template: templateFor(lead.category),
+    template: templateKey,
     copy_json: JSON.stringify(copy),
     assets_json: JSON.stringify({ photos, hours, reviews, subdomain }),
     subdomain,
@@ -97,8 +105,8 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
     unpublish_at: addDays(config.demoTtlDays),
   });
 
-  updateLead(db, lead.id, { demo_url: url });
-  logEvent(db, 'demo.built', lead.id, { demo_id: demo.id, url, provider });
-  setLeadStatus(db, lead.id, 'demo_built', { demo_url: url });
+  await updateLead(db, lead.id, { demo_url: url });
+  await logEvent(db, 'demo.built', lead.id, { demo_id: demo.id, url, provider });
+  await setLeadStatus(db, lead.id, 'demo_built', { demo_url: url });
   return demo;
 }

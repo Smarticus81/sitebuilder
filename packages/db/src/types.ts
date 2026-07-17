@@ -12,7 +12,8 @@ export type LeadStatus =
 
 export type Segment = 'none' | 'bad';
 export type MessageChannel = 'email' | 'call_script';
-export type MessageStatus = 'draft' | 'approved' | 'sent' | 'bounced';
+export type MessageStatus = 'draft' | 'approved' | 'sent' | 'bounced' | 'canceled';
+export type SequenceStatus = 'draft' | 'approved' | 'completed' | 'canceled';
 
 export interface Lead {
   id: number;
@@ -33,6 +34,8 @@ export interface Lead {
   demo_url: string | null;
   rating: number | null;
   review_count: number | null;
+  close_reason: string | null;
+  closed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,12 +62,41 @@ export interface Message {
   status: MessageStatus;
   sent_at: string | null;
   approved_by: string | null;
+  sequence_id: number | null;
+  followup_step: number | null;
   created_at: string;
+}
+
+export interface Sequence {
+  id: number;
+  lead_id: number;
+  status: SequenceStatus;
+  approved_by: string | null;
+  cancel_reason: string | null;
+  max_followups: number;
+  spacing_days: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Suppression {
   email: string;
   reason: string | null;
+  created_at: string;
+}
+
+export type SmsStatus = 'draft' | 'approved' | 'sent' | 'canceled';
+
+export interface SmsMessage {
+  id: number;
+  lead_id: number;
+  to_phone: string;
+  body: string;
+  status: SmsStatus;
+  tcpa_basis: string | null;
+  approved_by: string | null;
+  sent_at: string | null;
+  provider_id: string | null;
   created_at: string;
 }
 
@@ -81,6 +113,33 @@ export interface ConfigRow {
   updated_at: string;
 }
 
+export interface Proposal {
+  id: number;
+  lead_id: number;
+  slug: string;
+  url: string | null;
+  payment_link_url: string | null;
+  payment_link_id: string | null;
+  price_cents: number;
+  monthly_cents: number | null;
+  currency: string;
+  created_at: string;
+}
+
+export type DomainRequestStatus = 'requested' | 'approved' | 'declined';
+
+export interface DomainRequest {
+  id: number;
+  lead_id: number;
+  domain: string;
+  status: DomainRequestStatus;
+  token: string;
+  requested_by: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
+}
+
 export interface EventRow {
   id: number;
   lead_id: number | null;
@@ -89,12 +148,21 @@ export interface EventRow {
   created_at: string;
 }
 
+// Full Lighthouse category scores, 0–100 each (null = not measured).
+export interface LighthouseScores {
+  performance: number | null;
+  seo: number | null;
+  accessibility: number | null;
+  bestPractices: number | null;
+}
+
 // Audit result persisted on leads.audit_json
 export interface WebsiteAudit {
   reachable: boolean;
   https: boolean;
   mobileViewport: boolean;
-  performanceScore: number | null; // 0–100, PageSpeed-style
+  performanceScore: number | null; // 0–100, mirrors lighthouse.performance
+  lighthouse: LighthouseScores | null;
   copyrightYear: number | null;
   stale: boolean;
   verdict: 'poor' | 'ok' | 'good';

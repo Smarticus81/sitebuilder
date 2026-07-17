@@ -19,14 +19,18 @@ export interface SendDeps {
 }
 
 /** Gate B→C transition: a human marks a draft approved. */
-export function approveMessage(db: DB, messageId: number, approvedBy: string): Message {
-  const msg = getMessage(db, messageId);
+export async function approveMessage(
+  db: DB,
+  messageId: number,
+  approvedBy: string,
+): Promise<Message> {
+  const msg = await getMessage(db, messageId);
   if (!msg) throw new Error(`Message ${messageId} not found`);
   if (msg.status !== 'draft' && msg.status !== 'approved') {
     throw new Error(`Message ${messageId} is ${msg.status}, cannot approve`);
   }
-  const updated = updateMessageStatus(db, messageId, 'approved', { approved_by: approvedBy });
-  logEvent(db, 'message.approved', msg.lead_id, { message_id: messageId, approved_by: approvedBy });
+  const updated = await updateMessageStatus(db, messageId, 'approved', { approved_by: approvedBy });
+  await logEvent(db, 'message.approved', msg.lead_id, { message_id: messageId, approved_by: approvedBy });
   return updated;
 }
 
@@ -51,19 +55,24 @@ export async function sendApprovedMessage(
   const { db, email, config } = deps;
   const dryRun = opts.dryRun ?? false;
 
-  const message = getMessage(db, messageId);
+  const message = await getMessage(db, messageId);
   if (!message) throw new Error(`Message ${messageId} not found`);
-  const lead = getLead(db, message.lead_id);
+  if (message.channel !== 'email') {
+    // Call scripts (and any future non-email channel) must never hit the
+    // email wire, approved or not.
+    throw new Error(`Message ${messageId} is channel '${message.channel}', not sendable as email`);
+  }
+  const lead = await getLead(db, message.lead_id);
   if (!lead) throw new Error(`Lead ${message.lead_id} not found`);
 
-  const gate = checkSendGate(db, config, lead, message);
+  const gate = await checkSendGate(db, config, lead, message);
   if (!gate.ok) {
-    logEvent(db, 'send.blocked', lead.id, { message_id: messageId, reasons: gate.reasons });
+    await logEvent(db, 'send.blocked', lead.id, { message_id: messageId, reasons: gate.reasons });
     return { sent: false, gate, dryRun };
   }
 
   if (dryRun) {
-    logEvent(db, 'send.dry_run', lead.id, {
+    await logEvent(db, 'send.dry_run', lead.id, {
       message_id: messageId,
       to: lead.contact_email,
       sentToday: gate.sentToday,
@@ -78,6 +87,7 @@ export async function sendApprovedMessage(
     replyTo: config.replyTo,
     subject: message.subject ?? '',
     text: message.body ?? '',
+    idempotencyKey: `storefront-msg-${messageId}`,
     headers: {
       'List-Unsubscribe': `<${unsubFromBody(message.body)}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
@@ -85,13 +95,13 @@ export async function sendApprovedMessage(
   });
 
   if (!result.ok) {
-    logEvent(db, 'send.failed', lead.id, { message_id: messageId, error: result.error });
+    await logEvent(db, 'send.failed', lead.id, { message_id: messageId, error: result.error });
     return { sent: false, gate, error: result.error, dryRun: false };
   }
 
-  updateMessageStatus(db, messageId, 'sent', { sent_at: new Date().toISOString() });
-  setLeadStatus(db, lead.id, 'contacted');
-  logEvent(db, 'send.sent', lead.id, {
+  await updateMessageStatus(db, messageId, 'sent', { sent_at: new Date().toISOString() });
+  await setLeadStatus(db, lead.id, 'contacted');
+  await logEvent(db, 'send.sent', lead.id, {
     message_id: messageId,
     provider: result.provider,
     provider_id: result.id,
@@ -101,9 +111,9 @@ export async function sendApprovedMessage(
 }
 
 /** Record an unsubscribe: permanent suppression + audit. */
-export function recordUnsubscribe(db: DB, email: string, leadId?: number): void {
-  addSuppression(db, email, 'recipient unsubscribed');
-  logEvent(db, 'unsubscribe', leadId ?? null, { email });
+export async function recordUnsubscribe(db: DB, email: string, leadId?: number): Promise<void> {
+  await addSuppression(db, email, 'recipient unsubscribed');
+  await logEvent(db, 'unsubscribe', leadId ?? null, { email });
 }
 
 function unsubFromBody(body: string | null): string {

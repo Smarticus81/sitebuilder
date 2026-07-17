@@ -8,9 +8,11 @@
     "./schema.sql": "./src/schema.sql"
   },
   "dependencies": {
-    "better-sqlite3": "^11.7.0"
+    "better-sqlite3": "^11.7.0",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12"
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/pg": "^8.11.10"
   }
 }

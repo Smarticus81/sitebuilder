@@ -18,6 +18,8 @@ export default defineConfig({
     proxy: {
       '/api': WORKER,
       '/demos': WORKER,
+      '/proposals': WORKER,
+      '/beacon': WORKER,
       '/unsubscribe': WORKER,
     },
   },

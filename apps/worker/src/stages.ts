@@ -19,7 +19,11 @@ import {
   approveMessage,
   sendApprovedMessage,
   getMessageByLead,
+  draftFollowupSequence,
+  approveSequence,
+  runSequences,
   type SendOutcome,
+  type SequenceRunResult,
 } from '@storefront/core';
 
 // ── Stage 1: Prospector ──────────────────────────────────────────────────────
@@ -38,7 +42,7 @@ export async function prospect(ctx: Context, params: ProspectParams) {
       skipped++;
       continue;
     }
-    const { inserted: isNew } = upsertLead(ctx.db, {
+    const { inserted: isNew } = await upsertLead(ctx.db, {
       place_id: p.placeId,
       name: p.name,
       category: p.category,
@@ -58,25 +62,25 @@ export async function prospect(ctx: Context, params: ProspectParams) {
 
 // ── Stage 2: Qualifier ───────────────────────────────────────────────────────
 export async function qualifyAll(ctx: Context) {
-  const leads = listLeads(ctx.db, 'discovered');
+  const leads = await listLeads(ctx.db, 'discovered');
   const out = { qualified: 0, dropped: 0, bad: 0, none: 0 };
   for (const lead of leads) {
-    const r = await qualifyLead(lead, process.env);
+    const r = await qualifyLead(lead, process.env, ctx.audit);
     if (r.decision === 'drop') {
-      updateLead(ctx.db, lead.id, { audit_json: JSON.stringify(r.audit), score: 0 });
-      setLeadStatus(ctx.db, lead.id, 'lost', { audit_json: JSON.stringify(r.audit) });
-      logEvent(ctx.db, 'lead.dropped', lead.id, { reason: r.reason });
+      await updateLead(ctx.db, lead.id, { audit_json: JSON.stringify(r.audit), score: 0 });
+      await setLeadStatus(ctx.db, lead.id, 'lost', { audit_json: JSON.stringify(r.audit) });
+      await logEvent(ctx.db, 'lead.dropped', lead.id, { reason: r.reason });
       out.dropped++;
       continue;
     }
-    updateLead(ctx.db, lead.id, {
+    await updateLead(ctx.db, lead.id, {
       segment: r.segment,
       score: r.score,
       audit_json: r.audit ? JSON.stringify(r.audit) : null,
       contact_email: r.contactEmail,
     });
-    setLeadStatus(ctx.db, lead.id, 'qualified');
-    logEvent(ctx.db, 'lead.qualified', lead.id, {
+    await setLeadStatus(ctx.db, lead.id, 'qualified');
+    await logEvent(ctx.db, 'lead.qualified', lead.id, {
       segment: r.segment,
       score: Number(r.score.toFixed(2)),
       reason: r.reason,
@@ -94,7 +98,7 @@ export async function qualifyAll(ctx: Context) {
  * reachable). `none`-segment leads are skipped here (phone-first, Phase 3).
  */
 export async function buildAll(ctx: Context, opts: { limit?: number } = {}) {
-  const leads = listLeads(ctx.db, 'qualified').filter((l) => l.segment === 'bad');
+  const leads = (await listLeads(ctx.db, 'qualified')).filter((l) => l.segment === 'bad');
   const slice = opts.limit ? leads.slice(0, opts.limit) : leads;
   const built: number[] = [];
   for (const lead of slice) {
@@ -105,34 +109,34 @@ export async function buildAll(ctx: Context, opts: { limit?: number } = {}) {
 }
 
 export async function buildOne(ctx: Context, leadId: number) {
-  const lead = requireLead(ctx, leadId);
+  const lead = await requireLead(ctx, leadId);
   return buildDemo(ctx, lead);
 }
 
 // ── Stage 4: Outreach drafting (Gate B → draft) ──────────────────────────────
 export async function draftAll(ctx: Context, opts: { limit?: number } = {}) {
-  const leads = listLeads(ctx.db, 'demo_built');
+  const leads = await listLeads(ctx.db, 'demo_built');
   const slice = opts.limit ? leads.slice(0, opts.limit) : leads;
   const drafted: number[] = [];
   for (const lead of slice) {
     if (!lead.contact_email) continue; // email channel needs an address
     await draftOutreach(ctx, lead);
-    setLeadStatus(ctx.db, lead.id, 'ready');
+    await setLeadStatus(ctx.db, lead.id, 'ready');
     drafted.push(lead.id);
   }
   return { drafted: drafted.length, leadIds: drafted };
 }
 
 export async function draftOne(ctx: Context, leadId: number) {
-  const lead = requireLead(ctx, leadId);
+  const lead = await requireLead(ctx, leadId);
   const msg = await draftOutreach(ctx, lead);
-  setLeadStatus(ctx.db, lead.id, 'ready');
+  await setLeadStatus(ctx.db, lead.id, 'ready');
   return msg;
 }
 
 // ── Gate C: approve + send ───────────────────────────────────────────────────
-export function approveLeadMessage(ctx: Context, leadId: number, approvedBy: string) {
-  const msg = getMessageByLead(ctx.db, leadId);
+export async function approveLeadMessage(ctx: Context, leadId: number, approvedBy: string) {
+  const msg = await getMessageByLead(ctx.db, leadId);
   if (!msg) throw new Error(`No draft message for lead ${leadId}`);
   return approveMessage(ctx.db, msg.id, approvedBy);
 }
@@ -142,9 +146,9 @@ export async function sendAll(
   opts: { dryRun?: boolean; limit?: number } = {},
 ): Promise<{ attempted: number; sent: number; blocked: number; outcomes: SendOutcome[] }> {
   // Only messages a human has APPROVED are eligible (Gate C).
-  const approved = ctx.db
-    .prepare(`SELECT * FROM messages WHERE status = 'approved' ORDER BY id ASC`)
-    .all() as { id: number }[];
+  const approved = await ctx.db.all<{ id: number }>(
+    `SELECT * FROM messages WHERE status = 'approved' AND channel = 'email' ORDER BY id ASC`,
+  );
   const slice = opts.limit ? approved.slice(0, opts.limit) : approved;
   const outcomes: SendOutcome[] = [];
   let sent = 0;
@@ -163,13 +167,34 @@ export async function sendOneMessage(
   messageId: number,
   opts: { dryRun?: boolean } = {},
 ) {
-  if (!getMessage(ctx.db, messageId)) throw new Error(`Message ${messageId} not found`);
+  if (!(await getMessage(ctx.db, messageId))) throw new Error(`Message ${messageId} not found`);
   return sendApprovedMessage(ctx, messageId, opts);
 }
 
+// ── Follow-up sequences (Phase 2) ────────────────────────────────────────────
+
+/** Draft (never send) a follow-up sequence for a contacted lead. */
+export async function draftSequenceForLead(ctx: Context, leadId: number) {
+  const lead = await requireLead(ctx, leadId);
+  return draftFollowupSequence(ctx.db, ctx.config, lead);
+}
+
+/** Human gate: approve a drafted sequence (and its follow-up messages). */
+export async function approveSequenceById(ctx: Context, sequenceId: number, approvedBy: string) {
+  return approveSequence(ctx.db, sequenceId, approvedBy);
+}
+
+/** Scheduled runner: sends due follow-ups through the send gate. */
+export async function runSequencesJob(
+  ctx: Context,
+  opts: { dryRun?: boolean; now?: Date } = {},
+): Promise<SequenceRunResult> {
+  return runSequences(ctx, opts);
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
-function requireLead(ctx: Context, id: number): Lead {
-  const lead = getLead(ctx.db, id);
+async function requireLead(ctx: Context, id: number): Promise<Lead> {
+  const lead = await getLead(ctx.db, id);
   if (!lead) throw new Error(`Lead ${id} not found`);
   return lead;
 }
