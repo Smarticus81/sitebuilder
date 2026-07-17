@@ -137,3 +137,36 @@ CREATE TABLE IF NOT EXISTS sms_suppression (
   reason     TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Close/convert (Phase 3). A proposal packages the demo + pricing + a Stripe
+-- payment link. Payment links let the CUSTOMER choose to pay — the system
+-- never charges anyone autonomously.
+CREATE TABLE IF NOT EXISTS proposals (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id          INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  slug             TEXT NOT NULL,
+  url              TEXT,
+  payment_link_url TEXT,
+  payment_link_id  TEXT,
+  price_cents      INTEGER NOT NULL,
+  monthly_cents    INTEGER,
+  currency         TEXT NOT NULL DEFAULT 'usd',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_lead ON proposals(lead_id);
+
+-- Domain purchase REQUESTS. The system only generates an approval link; a
+-- human clicks approve/decline. Nothing here ever buys a domain.
+CREATE TABLE IF NOT EXISTS domain_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id      INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  domain       TEXT NOT NULL,
+  -- requested → approved | declined  (all decisions are human actions)
+  status       TEXT NOT NULL DEFAULT 'requested',
+  token        TEXT NOT NULL UNIQUE,
+  requested_by TEXT,
+  decided_by   TEXT,
+  decided_at   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_domain_requests_lead ON domain_requests(lead_id);

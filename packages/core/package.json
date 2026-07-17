@@ -13,6 +13,7 @@
     "@storefront/llm": "workspace:*",
     "@storefront/places": "workspace:*",
     "@storefront/net": "workspace:*",
-    "@storefront/sms": "workspace:*"
+    "@storefront/sms": "workspace:*",
+    "@storefront/payments": "workspace:*"
   }
 }

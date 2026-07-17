@@ -15,6 +15,8 @@ import type {
   SmsMessage,
   SmsStatus,
   Suppression,
+  Proposal,
+  DomainRequest,
   ConfigRow,
   EventRow,
 } from './types.js';
@@ -63,6 +65,9 @@ export function migrate(db: DB): void {
   // Additive migrations for databases created before these columns existed.
   ensureColumn(db, 'messages', 'sequence_id', 'INTEGER REFERENCES sequences(id) ON DELETE SET NULL');
   ensureColumn(db, 'messages', 'followup_step', 'INTEGER');
+  // Phase 3: close tracking.
+  ensureColumn(db, 'leads', 'close_reason', 'TEXT');
+  ensureColumn(db, 'leads', 'closed_at', 'TEXT');
 }
 
 function ensureColumn(db: DB, table: string, column: string, ddl: string): void {
@@ -471,6 +476,82 @@ export function addPhoneSuppression(db: DB, phone: string, reason: string): void
     reason,
   );
   logEvent(db, 'sms.suppression.add', null, { phone: normPhone(phone), reason });
+}
+
+// ── Proposals + domain requests (Phase 3 close flow) ─────────────────────────
+
+export function insertProposal(
+  db: DB,
+  p: Omit<Proposal, 'id' | 'created_at'>,
+): Proposal {
+  const info = db
+    .prepare(
+      `INSERT INTO proposals (lead_id, slug, url, payment_link_url, payment_link_id,
+        price_cents, monthly_cents, currency)
+       VALUES (@lead_id, @slug, @url, @payment_link_url, @payment_link_id,
+        @price_cents, @monthly_cents, @currency)`,
+    )
+    .run(p);
+  const row = db
+    .prepare(`SELECT * FROM proposals WHERE id = ?`)
+    .get(Number(info.lastInsertRowid)) as Proposal;
+  logEvent(db, 'proposal.created', row.lead_id, {
+    proposal_id: row.id,
+    url: row.url,
+    price_cents: row.price_cents,
+  });
+  return row;
+}
+
+export function getProposalByLead(db: DB, leadId: number): Proposal | undefined {
+  return db
+    .prepare(`SELECT * FROM proposals WHERE lead_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(leadId) as Proposal | undefined;
+}
+
+export function insertDomainRequest(
+  db: DB,
+  r: Pick<DomainRequest, 'lead_id' | 'domain' | 'token' | 'requested_by'>,
+): DomainRequest {
+  const info = db
+    .prepare(
+      `INSERT INTO domain_requests (lead_id, domain, token, requested_by, status)
+       VALUES (@lead_id, @domain, @token, @requested_by, 'requested')`,
+    )
+    .run(r);
+  const row = db
+    .prepare(`SELECT * FROM domain_requests WHERE id = ?`)
+    .get(Number(info.lastInsertRowid)) as DomainRequest;
+  logEvent(db, 'domain.requested', row.lead_id, { request_id: row.id, domain: row.domain });
+  return row;
+}
+
+export function getDomainRequestByToken(db: DB, token: string): DomainRequest | undefined {
+  return db
+    .prepare(`SELECT * FROM domain_requests WHERE token = ?`)
+    .get(token) as DomainRequest | undefined;
+}
+
+export function decideDomainRequest(
+  db: DB,
+  token: string,
+  decision: 'approved' | 'declined',
+  decidedBy: string,
+): DomainRequest {
+  const req = getDomainRequestByToken(db, token);
+  if (!req) throw new Error('Domain request not found');
+  if (req.status !== 'requested') return req; // idempotent: first decision wins
+  db.prepare(
+    `UPDATE domain_requests SET status = ?, decided_by = ?, decided_at = datetime('now')
+     WHERE token = ?`,
+  ).run(decision, decidedBy, token);
+  const row = getDomainRequestByToken(db, token)!;
+  logEvent(db, `domain.${decision}`, row.lead_id, {
+    request_id: row.id,
+    domain: row.domain,
+    decided_by: decidedBy,
+  });
+  return row;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────

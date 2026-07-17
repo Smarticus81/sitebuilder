@@ -208,6 +208,45 @@ async function main() {
       }
       break;
     }
+    case 'proposal': {
+      const ctx = banner();
+      const leadId = Number(positional[0]);
+      if (!leadId) return fail('usage: proposal <leadId>');
+      const { createProposal } = await import('@storefront/core');
+      const { getLead } = await import('@storefront/db');
+      const lead = getLead(ctx.db, leadId);
+      if (!lead) return fail(`lead ${leadId} not found`);
+      const p = await createProposal(ctx, lead);
+      console.log(`✓ proposal ${p.id} created:\n  page: ${p.url}\n  payment link: ${p.payment_link_url}`);
+      break;
+    }
+    case 'domain-request': {
+      const ctx = banner();
+      const leadId = Number(positional[0]);
+      const domain = positional[1];
+      if (!leadId || !domain) return fail('usage: domain-request <leadId> <domain>');
+      const { requestDomainPurchase } = await import('@storefront/core');
+      const { getLead } = await import('@storefront/db');
+      const lead = getLead(ctx.db, leadId);
+      if (!lead) return fail(`lead ${leadId} not found`);
+      const r = requestDomainPurchase(ctx.db, lead, domain, String(flags.by ?? 'cli-operator'));
+      console.log(`✓ domain request ${r.request.id} for ${r.request.domain} (NO purchase made)`);
+      console.log(`  approve: ${r.approveUrl}`);
+      console.log(`  decline: ${r.declineUrl}`);
+      break;
+    }
+    case 'close': {
+      const ctx = banner();
+      const leadId = Number(positional[0]);
+      const outcome = positional[1] as 'won' | 'lost';
+      const reason = String(flags.reason ?? '');
+      if (!leadId || (outcome !== 'won' && outcome !== 'lost'))
+        return fail('usage: close <leadId> won|lost --reason "..."');
+      const { closeLead } = await import('@storefront/core');
+      const lead = closeLead(ctx.db, leadId, outcome, reason);
+      console.log(`✓ lead ${lead.id} closed ${outcome}: ${lead.close_reason}`);
+      break;
+    }
     case 'unpublish': {
       const ctx = banner();
       const { runUnpublishJob } = await import('@storefront/core');
@@ -232,7 +271,7 @@ async function main() {
     default:
       fail(
         `Unknown command: ${cmd ?? '(none)'}\n` +
-          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | callscript | sms | unpublish | status',
+          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | callscript | sms | proposal | domain-request | close | unpublish | status',
       );
   }
 }

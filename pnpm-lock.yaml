@@ -84,6 +84,9 @@ importers:
       '@storefront/net':
         specifier: workspace:*
         version: link:../../packages/net
+      '@storefront/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
       '@storefront/places':
         specifier: workspace:*
         version: link:../../packages/places
@@ -112,6 +115,9 @@ importers:
       '@storefront/net':
         specifier: workspace:*
         version: link:../net
+      '@storefront/payments':
+        specifier: workspace:*
+        version: link:../payments
       '@storefront/places':
         specifier: workspace:*
         version: link:../places
@@ -142,6 +148,12 @@ importers:
         version: link:../net
 
   packages/net: {}
+
+  packages/payments:
+    dependencies:
+      '@storefront/net':
+        specifier: workspace:*
+        version: link:../net
 
   packages/places:
     dependencies:

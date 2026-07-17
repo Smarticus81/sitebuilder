@@ -14,4 +14,5 @@ export * from './sender.js';
 export * from './sequence.js';
 export * from './jobs.js';
 export * from './outreach-none.js';
+export * from './close.js';
 export * from './replies.js';

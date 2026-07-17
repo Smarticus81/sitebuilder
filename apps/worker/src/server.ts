@@ -26,6 +26,10 @@ import {
   approveSms,
   sendApprovedSms,
   recordSmsOptOut,
+  createProposal,
+  requestDomainPurchase,
+  decideDomainRequest,
+  closeLead,
 } from '@storefront/core';
 import {
   prospect,
@@ -84,6 +88,8 @@ app.options('*', (_req, res) => res.sendStatus(204));
 
 // Serve locally-deployed demos so the dashboard preview iframe resolves offline.
 app.use('/demos', express.static(resolve(process.cwd(), 'demos-out')));
+// Proposal pages (Phase 3 close flow).
+app.use('/proposals', express.static(resolve(process.cwd(), 'proposals-out')));
 
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown> | unknown) =>
   async (req: Request, res: Response) => {
@@ -271,6 +277,69 @@ app.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res)
   }
   res.type('text/xml').send('<Response></Response>');
 });
+
+// ── Phase 3: close & convert ─────────────────────────────────────────────────
+app.post(
+  '/api/leads/:id/proposal',
+  wrap(async (req, res) => {
+    const lead = getLead(ctx.db, Number(req.params.id));
+    if (!lead) return res.status(404).json({ error: 'not found' });
+    const proposal = await createProposal(ctx, lead);
+    res.json({ ok: true, proposal });
+  }),
+);
+
+app.post(
+  '/api/leads/:id/domain-request',
+  wrap(async (req, res) => {
+    const lead = getLead(ctx.db, Number(req.params.id));
+    if (!lead) return res.status(404).json({ error: 'not found' });
+    const domain = String(req.body?.domain ?? '');
+    const by = String(req.body?.requestedBy ?? 'dashboard-user');
+    const r = requestDomainPurchase(ctx.db, lead, domain, by);
+    res.json({ ok: true, ...r });
+  }),
+);
+
+// The human clicks the approval link — this only RECORDS the decision.
+app.get('/approve/domain', (req, res) => {
+  const token = String(req.query.token ?? '');
+  const decision = String(req.query.decision ?? '');
+  if (!token || (decision !== 'approve' && decision !== 'decline')) {
+    return res.status(400).send('Invalid approval link.');
+  }
+  try {
+    const r = decideDomainRequest(
+      ctx.db,
+      token,
+      decision === 'approve' ? 'approved' : 'declined',
+      'approval-link',
+    );
+    res.send(
+      `<html><body style="font-family:sans-serif;max-width:520px;margin:60px auto">` +
+        `<h2>Domain request ${r.status}</h2><p><strong>${r.domain}</strong> is now ` +
+        `<strong>${r.status}</strong>. ${
+          r.status === 'approved'
+            ? 'No purchase has been made — complete the registration manually with your registrar.'
+            : 'No further action will be taken.'
+        }</p></body></html>`,
+    );
+  } catch {
+    res.status(404).send('Domain request not found.');
+  }
+});
+
+app.post(
+  '/api/leads/:id/close',
+  wrap(async (req, res) => {
+    const outcome = req.body?.outcome as 'won' | 'lost';
+    const reason = String(req.body?.reason ?? '');
+    if (outcome !== 'won' && outcome !== 'lost')
+      return res.status(400).json({ error: 'outcome must be won|lost' });
+    const lead = closeLead(ctx.db, Number(req.params.id), outcome, reason);
+    res.json({ ok: true, lead });
+  }),
+);
 
 // ── Tracker: manual status update ────────────────────────────────────────────
 app.post(

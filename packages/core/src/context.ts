@@ -4,6 +4,7 @@ import { createPlacesProvider, type PlacesProvider } from '@storefront/places';
 import { createLlmProvider, type LlmProvider } from '@storefront/llm';
 import { createEmailProvider, type EmailProvider } from '@storefront/email';
 import { createSmsProvider, type SmsProvider } from '@storefront/sms';
+import { createPaymentsProvider, type PaymentsProvider } from '@storefront/payments';
 import { createDeployProvider, type DeployProvider } from './deploy.js';
 import { createAuditProvider, type AuditProvider } from './audit.js';
 import { loadConfig, type StorefrontConfig } from './config.js';
@@ -15,6 +16,7 @@ export interface Context {
   llm: LlmProvider;
   email: EmailProvider;
   sms: SmsProvider;
+  payments: PaymentsProvider;
   deploy: DeployProvider;
   audit: AuditProvider;
   config: StorefrontConfig;
@@ -35,6 +37,7 @@ export function createContext(env: NodeJS.ProcessEnv = process.env): Context {
     llm: createLlmProvider(env, netLog),
     email: createEmailProvider(env, netLog),
     sms: createSmsProvider(env, netLog),
+    payments: createPaymentsProvider(env, netLog),
     deploy: createDeployProvider(env, netLog),
     audit: createAuditProvider(env, netLog),
   };
@@ -48,6 +51,7 @@ export function adapterModes(ctx: Context): Record<string, 'live' | 'mock'> {
     llm: ctx.llm.mode,
     email: ctx.email.mode,
     sms: ctx.sms.mode,
+    payments: ctx.payments.mode,
     deploy: ctx.deploy.mode,
     audit: ctx.audit.mode,
   };

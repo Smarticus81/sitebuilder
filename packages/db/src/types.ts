@@ -34,6 +34,8 @@ export interface Lead {
   demo_url: string | null;
   rating: number | null;
   review_count: number | null;
+  close_reason: string | null;
+  closed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -109,6 +111,33 @@ export interface ConfigRow {
   followup_days: number;
   demo_ttl_days: number;
   updated_at: string;
+}
+
+export interface Proposal {
+  id: number;
+  lead_id: number;
+  slug: string;
+  url: string | null;
+  payment_link_url: string | null;
+  payment_link_id: string | null;
+  price_cents: number;
+  monthly_cents: number | null;
+  currency: string;
+  created_at: string;
+}
+
+export type DomainRequestStatus = 'requested' | 'approved' | 'declined';
+
+export interface DomainRequest {
+  id: number;
+  lead_id: number;
+  domain: string;
+  status: DomainRequestStatus;
+  token: string;
+  requested_by: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
 }
 
 export interface EventRow {

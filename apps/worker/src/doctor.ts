@@ -95,6 +95,15 @@ const PING: Record<string, () => Promise<PingResult>> = {
     return { ok: res.ok, note: res.ok ? 'token authenticated' : `HTTP ${res.status}` };
   },
 
+  payments: async () => {
+    const res = await fetchWithRetry(
+      'https://api.stripe.com/v1/balance',
+      { headers: { Authorization: `Bearer ${env.STRIPE_API_KEY}` } },
+      { service: 'doctor', retries: 1 },
+    );
+    return { ok: res.ok, note: res.ok ? 'Stripe key authenticated (read-only balance check)' : `HTTP ${res.status}` };
+  },
+
   audit: async () => {
     const url =
       'https://www.googleapis.com/pagespeedonline/v5/runPagespeed' +

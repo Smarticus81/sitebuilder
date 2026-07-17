@@ -40,7 +40,7 @@ async function run() {
 
   // Clean slate — DB rows + generated artifacts, so counts are deterministic.
   resetDb(getDb());
-  for (const dir of ['demos-out', resolve('data', 'outbox')]) {
+  for (const dir of ['demos-out', 'proposals-out', resolve('data', 'outbox'), resolve('data', 'sms-outbox')]) {
     const abs = resolve(process.cwd(), dir);
     if (existsSync(abs)) rmSync(abs, { recursive: true, force: true });
   }
@@ -225,7 +225,11 @@ async function run() {
   section('Phase C — call scripts + "text the demo" SMS (TCPA-gated)');
   await testNoneSegment(ctx);
 
-  // ── 13. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 13. Phase C: close & convert ────────────────────────────────────────────
+  section('Phase C — proposals, domain requests (approval-only), won/lost');
+  await testCloseFlow(ctx);
+
+  // ── 14. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
@@ -355,6 +359,84 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   const seqEvents = new Set(listEvents(ctx.db).map((e) => e.type));
   for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
     check(`logged: ${t}`, seqEvents.has(t));
+  }
+}
+
+/**
+ * Close & convert: proposal page + customer-initiated payment link; domain
+ * purchases are approval-link-only (never bought by the system); won/lost
+ * always records a reason.
+ */
+async function testCloseFlow(ctx: ReturnType<typeof createContext>) {
+  const { createProposal, requestDomainPurchase, decideDomainRequest, closeLead } =
+    await import('@storefront/core');
+  const { getLead, getProposalByLead, listEvents } = await import('@storefront/db');
+  const { readFileSync } = await import('node:fs');
+
+  const lead = listLeads(ctx.db, 'contacted').find((l) => !!l.demo_url);
+  check('a contacted lead with a demo exists for closing', !!lead, lead?.name ?? 'none');
+  if (!lead) return;
+
+  // Proposal: page + payment link (mock Stripe → deterministic URL).
+  const proposal = await createProposal(ctx, lead);
+  const file = resolve(process.cwd(), 'proposals-out', proposal.slug, 'index.html');
+  const html = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  check('proposal row persisted with payment link', !!getProposalByLead(ctx.db, lead.id)?.payment_link_url);
+  check(
+    'proposal page renders demo link + payment CTA + price',
+    html.includes(lead.demo_url!) && html.includes(proposal.payment_link_url!) && html.includes('$1,500'),
+  );
+  check(
+    'payment is customer-initiated only (page says nothing is charged automatically)',
+    html.includes('Nothing is charged until you choose to pay'),
+  );
+  const noDemo = listLeads(ctx.db, 'lost').find((l) => !l.demo_url);
+  if (noDemo) {
+    let err = '';
+    await createProposal(ctx, noDemo).catch((e) => (err = (e as Error).message));
+    check('proposal refuses without a demo (Gate A first)', err.includes('Gate A'));
+  }
+
+  // Domain purchase REQUEST — approval link only.
+  const dr = requestDomainPurchase(ctx.db, lead, 'TaqueriaLaFamiliaFW.com', 'acceptance');
+  check(
+    'domain request minted with approve/decline links (status requested)',
+    dr.request.status === 'requested' && dr.approveUrl.includes(dr.request.token) && dr.request.domain === 'taquerialafamiliafw.com',
+  );
+  let badDomainErr = '';
+  try {
+    requestDomainPurchase(ctx.db, lead, 'not a domain', 'acceptance');
+  } catch (e) {
+    badDomainErr = (e as Error).message;
+  }
+  check('invalid domain names are rejected', badDomainErr.includes('does not look like'));
+  const decided = decideDomainRequest(ctx.db, dr.request.token, 'approved', 'human-operator');
+  check('human decision recorded (approved, decider logged)', decided.status === 'approved' && decided.decided_by === 'human-operator');
+  const redecided = decideDomainRequest(ctx.db, dr.request.token, 'declined', 'someone-else');
+  check('decision is idempotent — first human decision wins', redecided.status === 'approved');
+  check(
+    'no purchase event exists anywhere (requests never buy)',
+    !listEvents(ctx.db).some((e) => e.type.includes('purchase')),
+  );
+
+  // Won/lost with reasons.
+  let reasonErr = '';
+  try {
+    closeLead(ctx.db, lead.id, 'won', '   ');
+  } catch (e) {
+    reasonErr = (e as Error).message;
+  }
+  check('closing without a reason is refused', reasonErr.includes('reason is required'));
+  const won = closeLead(ctx.db, lead.id, 'won', 'accepted proposal after SMS demo');
+  check(
+    'won close records reason + timestamp + audit event',
+    won.status === 'won' && won.close_reason === 'accepted proposal after SMS demo' && !!won.closed_at &&
+      listEvents(ctx.db, lead.id).some((e) => e.type === 'lead.won'),
+  );
+  const loser = listLeads(ctx.db, 'contacted')[0];
+  if (loser) {
+    const lost = closeLead(ctx.db, loser.id, 'lost', 'went with a competitor');
+    check('lost close records reason too', lost.status === 'lost' && lost.close_reason === 'went with a competitor');
   }
 }
 
