@@ -221,7 +221,11 @@ async function run() {
   section('Phase B — auto-unpublish job + reply/bounce detection');
   await testUnpublishAndReplies(ctx);
 
-  // ── 12. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 12. Phase C: none-segment — call scripts + TCPA-gated SMS ──────────────
+  section('Phase C — call scripts + "text the demo" SMS (TCPA-gated)');
+  await testNoneSegment(ctx);
+
+  // ── 13. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
@@ -351,6 +355,102 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   const seqEvents = new Set(listEvents(ctx.db).map((e) => e.type));
   for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
     check(`logged: ${t}`, seqEvents.has(t));
+  }
+}
+
+/**
+ * None-segment (phone-first): call scripts draft for the operator; "text the
+ * demo" SMS has its OWN gate — human approval with a documented TCPA basis,
+ * STOP language, quiet hours, daily cap, and permanent opt-out.
+ */
+async function testNoneSegment(ctx: ReturnType<typeof createContext>) {
+  const {
+    draftCallScript, draftDemoSms, approveSms, sendApprovedSms, recordSmsOptOut, smsPolicy,
+  } = await import('@storefront/core');
+  const { getLead, getSms, listEvents } = await import('@storefront/db');
+
+  const noneLead = listLeads(ctx.db, 'qualified').find((l) => l.segment === 'none' && !!l.phone);
+  check('a phone-first none-segment lead exists', !!noneLead, noneLead?.name ?? 'none found');
+  if (!noneLead) return;
+
+  // Call scripts never reach the email wire.
+  const script = draftCallScript(ctx.db, ctx.config, noneLead);
+  check(
+    'call script drafted for the operator (channel call_script)',
+    script.channel === 'call_script' && script.body!.includes(noneLead.phone!) && script.status === 'draft',
+  );
+  let scriptSendErr = '';
+  try {
+    ctx.db.prepare(`UPDATE messages SET status='approved' WHERE id=?`).run(script.id);
+    await sendOneMessage(ctx, script.id, { dryRun: true });
+  } catch (e) {
+    scriptSendErr = (e as Error).message;
+  }
+  check('an approved call script still cannot be emailed', scriptSendErr.includes('not sendable as email'));
+
+  // SMS needs a built demo (Gate A is per-lead and explicit).
+  let noDemoErr = '';
+  try {
+    draftDemoSms(ctx.db, ctx.config, noneLead);
+  } catch (e) {
+    noDemoErr = (e as Error).message;
+  }
+  check('SMS draft refuses without a demo (Gate A first)', noDemoErr.includes('Gate A'));
+  await buildOne(ctx, noneLead.id);
+  const built = getLead(ctx.db, noneLead.id)!;
+  const sms = draftDemoSms(ctx.db, ctx.config, built);
+  check(
+    'SMS draft carries demo link + STOP opt-out language',
+    sms.body.includes(built.demo_url!) && sms.body.includes('Reply STOP'),
+  );
+
+  // Inside-window clock for deterministic gate checks (2pm local).
+  const policy = smsPolicy(process.env);
+  const daytime = new Date(Date.UTC(2026, 6, 17, (14 - policy.tzOffsetHours) % 24, 0, 0));
+
+  // Gate: unapproved SMS is blocked.
+  const preApprove = await sendApprovedSms(ctx, sms.id, { dryRun: true, now: daytime });
+  check('unapproved SMS is blocked at the gate', !preApprove.gate.ok && preApprove.gate.reasons.some((r) => r.includes('not approved')));
+
+  // Gate: approval REQUIRES a documented TCPA basis.
+  let basisErr = '';
+  try {
+    approveSms(ctx.db, sms.id, 'acceptance', '');
+  } catch (e) {
+    basisErr = (e as Error).message;
+  }
+  check('approval without a TCPA basis is refused', basisErr.includes('TCPA basis required'));
+  approveSms(ctx.db, sms.id, 'acceptance', 'Owner said OK to text on discovery call 2026-07-16 (see CRM note #42)');
+  check('TCPA basis + approver recorded on the SMS', getSms(ctx.db, sms.id)!.tcpa_basis!.includes('CRM note') && getSms(ctx.db, sms.id)!.approved_by === 'acceptance');
+
+  // Gate: quiet hours (10pm local is blocked even when approved).
+  const night = new Date(Date.UTC(2026, 6, 17, (22 - policy.tzOffsetHours) % 24, 0, 0));
+  const nightOut = await sendApprovedSms(ctx, sms.id, { dryRun: true, now: night });
+  check('quiet hours block texts at 10pm local', !nightOut.gate.ok && nightOut.gate.reasons.some((r) => r.includes('send window')));
+
+  // Dry-run passes in the daytime, nothing sent.
+  const dry = await sendApprovedSms(ctx, sms.id, { dryRun: true, now: daytime });
+  check('approved SMS passes the gate in dry-run (nothing sent)', dry.gate.ok && !dry.sent && getSms(ctx.db, sms.id)!.status === 'approved');
+
+  // Real (mock) send → sms-outbox file + lead contacted.
+  const real = await sendApprovedSms(ctx, sms.id, { now: daytime });
+  const smsOutbox = resolve(process.cwd(), 'data', 'sms-outbox');
+  check(
+    'approved SMS sends via the mock provider to sms-outbox',
+    real.sent && existsSync(smsOutbox) && readdirSync(smsOutbox).length === 1,
+  );
+  check('SMS contact advances the lead to contacted', getLead(ctx.db, noneLead.id)!.status === 'contacted');
+
+  // STOP → permanent opt-out; further sends blocked.
+  recordSmsOptOut(ctx.db, built.phone!, built.id);
+  const sms2 = draftDemoSms(ctx.db, ctx.config, getLead(ctx.db, built.id)!);
+  approveSms(ctx.db, sms2.id, 'acceptance', 'same documented consent as sms #1 (CRM note #42)');
+  const blocked = await sendApprovedSms(ctx, sms2.id, { now: daytime });
+  check('STOP opt-out permanently blocks future texts', !blocked.sent && blocked.gate.reasons.some((r) => r.includes('opted out')));
+
+  const smsEvents = new Set(listEvents(ctx.db).map((e) => e.type));
+  for (const t of ['callscript.drafted', 'sms.drafted', 'sms.approved', 'sms.dry_run', 'sms.sent', 'sms.blocked', 'sms.opt_out']) {
+    check(`logged: ${t}`, smsEvents.has(t));
   }
 }
 

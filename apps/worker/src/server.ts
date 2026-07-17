@@ -21,6 +21,11 @@ import {
   handleInboundEvent,
   verifyResendSignature,
   runUnpublishJob,
+  draftCallScript,
+  draftDemoSms,
+  approveSms,
+  sendApprovedSms,
+  recordSmsOptOut,
 } from '@storefront/core';
 import {
   prospect,
@@ -215,6 +220,57 @@ app.post(
     res.json(r);
   }),
 );
+
+// ── Phase 3: none-segment (call scripts + TCPA-gated SMS) ────────────────────
+app.post(
+  '/api/leads/:id/call-script',
+  wrap(async (req, res) => {
+    const lead = getLead(ctx.db, Number(req.params.id));
+    if (!lead) return res.status(404).json({ error: 'not found' });
+    const message = draftCallScript(ctx.db, ctx.config, lead);
+    res.json({ ok: true, message });
+  }),
+);
+
+app.post(
+  '/api/leads/:id/sms',
+  wrap(async (req, res) => {
+    const lead = getLead(ctx.db, Number(req.params.id));
+    if (!lead) return res.status(404).json({ error: 'not found' });
+    const sms = draftDemoSms(ctx.db, ctx.config, lead);
+    res.json({ ok: true, sms });
+  }),
+);
+
+// Human gate: TCPA basis is REQUIRED and typed by the operator.
+app.post(
+  '/api/sms/:id/approve',
+  wrap(async (req, res) => {
+    const by = req.body?.approvedBy ?? 'dashboard-user';
+    const basis = String(req.body?.tcpaBasis ?? '');
+    const sms = approveSms(ctx.db, Number(req.params.id), by, basis);
+    res.json({ ok: true, sms });
+  }),
+);
+
+app.post(
+  '/api/sms/:id/send',
+  wrap(async (req, res) => {
+    const dryRun = req.body?.dryRun === true;
+    const outcome = await sendApprovedSms(ctx, Number(req.params.id), { dryRun });
+    res.json(outcome);
+  }),
+);
+
+// Twilio inbound webhook: STOP/UNSUBSCRIBE bodies opt the number out forever.
+app.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res) => {
+  const from = String(req.body?.From ?? '');
+  const text = String(req.body?.Body ?? '').trim().toUpperCase();
+  if (from && ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(text)) {
+    recordSmsOptOut(ctx.db, from);
+  }
+  res.type('text/xml').send('<Response></Response>');
+});
 
 // ── Tracker: manual status update ────────────────────────────────────────────
 app.post(

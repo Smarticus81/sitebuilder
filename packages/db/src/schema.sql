@@ -108,3 +108,32 @@ CREATE TABLE IF NOT EXISTS sequences (
 );
 CREATE INDEX IF NOT EXISTS idx_sequences_lead   ON sequences(lead_id);
 CREATE INDEX IF NOT EXISTS idx_sequences_status ON sequences(status);
+
+-- SMS outreach (Phase 3, none-segment "text the demo"). Separate channel with
+-- its OWN approval gate. TCPA in code: approval requires a documented consent
+-- basis, bodies must carry STOP language, quiet hours + daily cap + permanent
+-- phone suppression are enforced in checkSmsGate.
+CREATE TABLE IF NOT EXISTS sms_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  to_phone    TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  -- draft → approved → sent | canceled
+  status      TEXT NOT NULL DEFAULT 'draft',
+  -- REQUIRED at approval: documented opt-in or human-confirmed prior
+  -- business relationship (TCPA basis). Never auto-filled.
+  tcpa_basis  TEXT,
+  approved_by TEXT,
+  sent_at     TEXT,
+  provider_id TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sms_lead   ON sms_messages(lead_id);
+CREATE INDEX IF NOT EXISTS idx_sms_status ON sms_messages(status);
+
+-- Permanent SMS opt-out list (STOP replies land here). Checked on every send.
+CREATE TABLE IF NOT EXISTS sms_suppression (
+  phone      TEXT PRIMARY KEY,
+  reason     TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

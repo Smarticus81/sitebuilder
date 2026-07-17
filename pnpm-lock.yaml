@@ -87,6 +87,9 @@ importers:
       '@storefront/places':
         specifier: workspace:*
         version: link:../../packages/places
+      '@storefront/sms':
+        specifier: workspace:*
+        version: link:../../packages/sms
       express:
         specifier: ^4.21.2
         version: 4.22.2
@@ -112,6 +115,9 @@ importers:
       '@storefront/places':
         specifier: workspace:*
         version: link:../places
+      '@storefront/sms':
+        specifier: workspace:*
+        version: link:../sms
 
   packages/db:
     dependencies:
@@ -138,6 +144,12 @@ importers:
   packages/net: {}
 
   packages/places:
+    dependencies:
+      '@storefront/net':
+        specifier: workspace:*
+        version: link:../net
+
+  packages/sms:
     dependencies:
       '@storefront/net':
         specifier: workspace:*

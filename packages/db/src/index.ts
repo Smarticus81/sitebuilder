@@ -12,6 +12,8 @@ import type {
   MessageStatus,
   Sequence,
   SequenceStatus,
+  SmsMessage,
+  SmsStatus,
   Suppression,
   ConfigRow,
   EventRow,
@@ -75,6 +77,8 @@ export function resetDb(db: DB): void {
   db.exec(`
     DELETE FROM events;
     DELETE FROM messages;
+    DELETE FROM sms_messages;
+    DELETE FROM sms_suppression;
     DELETE FROM sequences;
     DELETE FROM demos;
     DELETE FROM suppression;
@@ -388,6 +392,85 @@ export function listSuppression(db: DB): Suppression[] {
   return db
     .prepare(`SELECT * FROM suppression ORDER BY created_at DESC`)
     .all() as Suppression[];
+}
+
+// ── SMS (Phase 3 — separate channel, separate gate) ──────────────────────────
+
+export function insertSms(
+  db: DB,
+  sms: Pick<SmsMessage, 'lead_id' | 'to_phone' | 'body'>,
+): SmsMessage {
+  const info = db
+    .prepare(
+      `INSERT INTO sms_messages (lead_id, to_phone, body, status)
+       VALUES (@lead_id, @to_phone, @body, 'draft')`,
+    )
+    .run(sms);
+  const row = getSms(db, Number(info.lastInsertRowid))!;
+  logEvent(db, 'sms.drafted', row.lead_id, { sms_id: row.id });
+  return row;
+}
+
+export function getSms(db: DB, id: number): SmsMessage | undefined {
+  return db.prepare(`SELECT * FROM sms_messages WHERE id = ?`).get(id) as
+    | SmsMessage
+    | undefined;
+}
+
+export function getSmsByLead(db: DB, leadId: number): SmsMessage | undefined {
+  return db
+    .prepare(`SELECT * FROM sms_messages WHERE lead_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(leadId) as SmsMessage | undefined;
+}
+
+export function updateSmsStatus(
+  db: DB,
+  id: number,
+  status: SmsStatus,
+  extra?: Partial<Pick<SmsMessage, 'tcpa_basis' | 'approved_by' | 'sent_at' | 'provider_id'>>,
+): SmsMessage {
+  db.prepare(
+    `UPDATE sms_messages SET status = @status,
+       tcpa_basis = COALESCE(@tcpa_basis, tcpa_basis),
+       approved_by = COALESCE(@approved_by, approved_by),
+       sent_at = COALESCE(@sent_at, sent_at),
+       provider_id = COALESCE(@provider_id, provider_id)
+     WHERE id = @id`,
+  ).run({
+    id,
+    status,
+    tcpa_basis: extra?.tcpa_basis ?? null,
+    approved_by: extra?.approved_by ?? null,
+    sent_at: extra?.sent_at ?? null,
+    provider_id: extra?.provider_id ?? null,
+  });
+  return getSms(db, id)!;
+}
+
+export function countSmsSentToday(db: DB): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sms_messages
+       WHERE status = 'sent' AND date(sent_at) = date('now')`,
+    )
+    .get() as { n: number };
+  return row.n;
+}
+
+const normPhone = (p: string) => p.replace(/[^0-9+]/g, '');
+
+export function isPhoneSuppressed(db: DB, phone: string): boolean {
+  return !!db
+    .prepare(`SELECT phone FROM sms_suppression WHERE phone = ?`)
+    .get(normPhone(phone));
+}
+
+export function addPhoneSuppression(db: DB, phone: string, reason: string): void {
+  db.prepare(`INSERT OR IGNORE INTO sms_suppression (phone, reason) VALUES (?, ?)`).run(
+    normPhone(phone),
+    reason,
+  );
+  logEvent(db, 'sms.suppression.add', null, { phone: normPhone(phone), reason });
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────

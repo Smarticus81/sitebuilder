@@ -53,6 +53,11 @@ export async function sendApprovedMessage(
 
   const message = getMessage(db, messageId);
   if (!message) throw new Error(`Message ${messageId} not found`);
+  if (message.channel !== 'email') {
+    // Call scripts (and any future non-email channel) must never hit the
+    // email wire, approved or not.
+    throw new Error(`Message ${messageId} is channel '${message.channel}', not sendable as email`);
+  }
   const lead = getLead(db, message.lead_id);
   if (!lead) throw new Error(`Lead ${message.lead_id} not found`);
 

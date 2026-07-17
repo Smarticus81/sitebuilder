@@ -83,6 +83,21 @@ export interface Suppression {
   created_at: string;
 }
 
+export type SmsStatus = 'draft' | 'approved' | 'sent' | 'canceled';
+
+export interface SmsMessage {
+  id: number;
+  lead_id: number;
+  to_phone: string;
+  body: string;
+  status: SmsStatus;
+  tcpa_basis: string | null;
+  approved_by: string | null;
+  sent_at: string | null;
+  provider_id: string | null;
+  created_at: string;
+}
+
 export interface ConfigRow {
   id: number;
   sender_name: string | null;

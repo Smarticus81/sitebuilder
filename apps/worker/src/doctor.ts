@@ -70,6 +70,20 @@ const PING: Record<string, () => Promise<PingResult>> = {
     return { ok: true, note: `FROM_DOMAIN "${from}" verified in Resend` };
   },
 
+  sms: async () => {
+    const sid = env.TWILIO_ACCOUNT_SID!;
+    const res = await fetchWithRetry(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}.json`,
+      {
+        headers: {
+          Authorization: 'Basic ' + Buffer.from(`${sid}:${env.TWILIO_AUTH_TOKEN}`).toString('base64'),
+        },
+      },
+      { service: 'doctor', retries: 1 },
+    );
+    return { ok: res.ok, note: res.ok ? 'Twilio account authenticated' : `HTTP ${res.status}` };
+  },
+
   deploy: async () => {
     const url = new URL('https://api.vercel.com/v2/user');
     if (env.VERCEL_TEAM_ID) url.searchParams.set('teamId', env.VERCEL_TEAM_ID);

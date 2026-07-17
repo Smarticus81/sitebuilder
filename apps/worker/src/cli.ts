@@ -161,6 +161,53 @@ async function main() {
       }
       break;
     }
+    case 'callscript': {
+      const ctx = banner();
+      const leadId = Number(positional[0]);
+      if (!leadId) return fail('usage: callscript <leadId>');
+      const { draftCallScript } = await import('@storefront/core');
+      const { getLead } = await import('@storefront/db');
+      const lead = getLead(ctx.db, leadId);
+      if (!lead) return fail(`lead ${leadId} not found`);
+      const msg = draftCallScript(ctx.db, ctx.config, lead);
+      console.log(`✓ call script drafted (message ${msg.id}):\n`);
+      console.log(msg.body);
+      break;
+    }
+    case 'sms': {
+      const ctx = banner();
+      const sub = positional[0];
+      const { draftDemoSms, approveSms, sendApprovedSms } = await import('@storefront/core');
+      const { getLead, getSms } = await import('@storefront/db');
+      if (sub === 'draft') {
+        const leadId = Number(positional[1]);
+        if (!leadId) return fail('usage: sms draft <leadId>');
+        const lead = getLead(ctx.db, leadId);
+        if (!lead) return fail(`lead ${leadId} not found`);
+        const sms = draftDemoSms(ctx.db, ctx.config, lead);
+        console.log(`✓ SMS ${sms.id} drafted to ${sms.to_phone}:\n  ${sms.body}`);
+        console.log('  → GATE: approve with `sms approve <smsId> --basis "<documented consent>"`');
+      } else if (sub === 'approve') {
+        const smsId = Number(positional[1]);
+        const basis = String(flags.basis ?? '');
+        if (!smsId) return fail('usage: sms approve <smsId> --basis "<documented opt-in / prior relationship>"');
+        const sms = approveSms(ctx.db, smsId, String(flags.by ?? 'cli-operator'), basis);
+        console.log(`✓ SMS ${sms.id} approved (TCPA basis recorded). Still capped + opt-out-checked at send.`);
+      } else if (sub === 'send') {
+        const smsId = Number(positional[1]);
+        if (!smsId) return fail('usage: sms send <smsId> [--dry-run]');
+        if (!getSms(ctx.db, smsId)) return fail(`sms ${smsId} not found`);
+        const dryRun = flags['dry-run'] === true || flags.dry === true;
+        const out = await sendApprovedSms(ctx, smsId, { dryRun });
+        if (!out.gate.ok) console.log(`✗ blocked: ${out.gate.reasons.join('; ')}`);
+        else if (out.dryRun) console.log(`◦ would send (${out.gate.sentToday}/${out.gate.cap} today)`);
+        else if (out.sent) console.log(`✓ sent (${out.providerId})`);
+        else console.log(`! error: ${out.error}`);
+      } else {
+        return fail('usage: sms draft <leadId> | sms approve <smsId> --basis "..." | sms send <smsId> [--dry-run]');
+      }
+      break;
+    }
     case 'unpublish': {
       const ctx = banner();
       const { runUnpublishJob } = await import('@storefront/core');
@@ -185,7 +232,7 @@ async function main() {
     default:
       fail(
         `Unknown command: ${cmd ?? '(none)'}\n` +
-          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | unpublish | status',
+          'Commands: migrate | reset | prospect | qualify | build | draft | approve | send | sequence | callscript | sms | unpublish | status',
       );
   }
 }
