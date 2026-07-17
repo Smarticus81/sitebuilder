@@ -89,12 +89,21 @@ export interface EventRow {
   created_at: string;
 }
 
+// Full Lighthouse category scores, 0–100 each (null = not measured).
+export interface LighthouseScores {
+  performance: number | null;
+  seo: number | null;
+  accessibility: number | null;
+  bestPractices: number | null;
+}
+
 // Audit result persisted on leads.audit_json
 export interface WebsiteAudit {
   reachable: boolean;
   https: boolean;
   mobileViewport: boolean;
-  performanceScore: number | null; // 0–100, PageSpeed-style
+  performanceScore: number | null; // 0–100, mirrors lighthouse.performance
+  lighthouse: LighthouseScores | null;
   copyrightYear: number | null;
   stale: boolean;
   verdict: 'poor' | 'ok' | 'good';

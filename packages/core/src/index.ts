@@ -1,4 +1,5 @@
 export * from './config.js';
+export * from './env-check.js';
 export * from './context.js';
 export * from './audit.js';
 export * from './email-scrape.js';

@@ -4,6 +4,7 @@ import { createPlacesProvider, type PlacesProvider } from '@storefront/places';
 import { createLlmProvider, type LlmProvider } from '@storefront/llm';
 import { createEmailProvider, type EmailProvider } from '@storefront/email';
 import { createDeployProvider, type DeployProvider } from './deploy.js';
+import { createAuditProvider, type AuditProvider } from './audit.js';
 import { loadConfig, type StorefrontConfig } from './config.js';
 
 /** Everything a pipeline stage needs, wired once. */
@@ -13,6 +14,7 @@ export interface Context {
   llm: LlmProvider;
   email: EmailProvider;
   deploy: DeployProvider;
+  audit: AuditProvider;
   config: StorefrontConfig;
 }
 
@@ -31,6 +33,7 @@ export function createContext(env: NodeJS.ProcessEnv = process.env): Context {
     llm: createLlmProvider(env, netLog),
     email: createEmailProvider(env, netLog),
     deploy: createDeployProvider(env, netLog),
+    audit: createAuditProvider(env, netLog),
   };
   return cached;
 }
@@ -42,5 +45,6 @@ export function adapterModes(ctx: Context): Record<string, 'live' | 'mock'> {
     llm: ctx.llm.mode,
     email: ctx.email.mode,
     deploy: ctx.deploy.mode,
+    audit: ctx.audit.mode,
   };
 }

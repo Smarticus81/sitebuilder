@@ -61,7 +61,7 @@ export async function qualifyAll(ctx: Context) {
   const leads = listLeads(ctx.db, 'discovered');
   const out = { qualified: 0, dropped: 0, bad: 0, none: 0 };
   for (const lead of leads) {
-    const r = await qualifyLead(lead, process.env);
+    const r = await qualifyLead(lead, process.env, ctx.audit);
     if (r.decision === 'drop') {
       updateLead(ctx.db, lead.id, { audit_json: JSON.stringify(r.audit), score: 0 });
       setLeadStatus(ctx.db, lead.id, 'lost', { audit_json: JSON.stringify(r.audit) });

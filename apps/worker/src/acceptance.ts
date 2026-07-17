@@ -66,6 +66,20 @@ async function run() {
   check('good existing site was DROPPED', dropped.some((l) => l.name.includes('Polished')), `${dropped.length} dropped`);
   check('bad leads have a scraped contact email', bad.every((l) => !!l.contact_email));
   check('leads sorted by score desc', isSortedDesc(bad.map((l) => l.score)));
+  const audits = bad.map((l) => JSON.parse(l.audit_json ?? 'null') as {
+    lighthouse: { performance: number | null; seo: number | null; accessibility: number | null; bestPractices: number | null } | null;
+  } | null);
+  check(
+    'audits carry all four Lighthouse categories (perf/seo/a11y/best-practices)',
+    audits.every(
+      (a) =>
+        a?.lighthouse != null &&
+        a.lighthouse.performance != null &&
+        a.lighthouse.seo != null &&
+        a.lighthouse.accessibility != null &&
+        a.lighthouse.bestPractices != null,
+    ),
+  );
 
   const targets = bad.slice(0, 5);
 
@@ -151,6 +165,22 @@ async function run() {
   // ── 9. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
+
+  // ── 10. Env validation (drives `pnpm doctor` and boot checks) ─────────────
+  section('Phase A — environment validation');
+  const { validateEnv } = await import('@storefront/core');
+  const goodEnv = validateEnv(process.env);
+  check('example .env validates clean (no errors)', goodEnv.errors.length === 0, goodEnv.errors.join('; '));
+  const badEnv = validateEnv({ ...process.env, MAILING_ADDRESS: '', REPLY_TO: 'not-an-email', FROM_DOMAIN: 'outreach.example.com' });
+  check(
+    'missing address / bad reply-to / example domain are all caught',
+    badEnv.errors.some((e) => e.includes('MAILING_ADDRESS')) &&
+      badEnv.errors.some((e) => e.includes('REPLY_TO')) &&
+      badEnv.errors.some((e) => e.includes('FROM_DOMAIN')),
+  );
+  check('apex FROM_DOMAIN warns toward a dedicated subdomain',
+    validateEnv({ ...process.env, FROM_DOMAIN: 'mydomain.com' }).warnings.some((w) => w.includes('subdomain')));
+  check('adapter modes include the audit provider', 'audit' in adapterModes(ctx));
 
   // ── Summary ────────────────────────────────────────────────────────────────
   section('Result');

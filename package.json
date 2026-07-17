@@ -16,6 +16,8 @@
     "migrate": "tsx apps/worker/src/cli.ts migrate",
     "reset": "tsx apps/worker/src/cli.ts reset",
     "acceptance": "tsx apps/worker/src/acceptance.ts",
+    "doctor": "tsx apps/worker/src/doctor.ts",
+    "smoke": "tsx apps/worker/src/smoke.ts",
     "server": "tsx apps/worker/src/server.ts",
     "dashboard": "pnpm --filter @storefront/dashboard dev",
     "dev": "pnpm -r --parallel --filter @storefront/worker --filter @storefront/dashboard dev",
