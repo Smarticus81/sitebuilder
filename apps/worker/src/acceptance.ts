@@ -1,6 +1,8 @@
 import './env.js';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { resolve } from 'node:path';
+import { fetchJson, fetchWithRetry, AdapterError } from '@storefront/net';
 import {
   getDb,
   resetDb,
@@ -146,6 +148,10 @@ async function run() {
     check(`logged: ${t}`, types.has(t));
   }
 
+  // ── 9. Adapter hardening: retry / backoff / timeout ───────────────────────
+  section('Phase A — adapter hardening (retry, Retry-After, timeout)');
+  await testAdapterHardening(ctx);
+
   // ── Summary ────────────────────────────────────────────────────────────────
   section('Result');
   if (failures === 0) {
@@ -155,6 +161,80 @@ async function run() {
   } else {
     console.log(`  ❌ ${failures} check(s) failed.\n`);
     process.exit(1);
+  }
+}
+
+/**
+ * Exercises @storefront/net against a throwaway local HTTP server: transient
+ * 5xx recovery, Retry-After honoring, no-retry on 4xx, per-attempt timeout,
+ * and structured adapter.* events flowing into the audit log.
+ */
+async function testAdapterHardening(ctx: ReturnType<typeof createContext>) {
+  const hits: Record<string, number> = {};
+  const server = createServer((req, res) => {
+    const path = req.url ?? '/';
+    hits[path] = (hits[path] ?? 0) + 1;
+    if (path === '/flaky') {
+      if (hits[path]! <= 2) {
+        res.writeHead(500).end('boom');
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
+      }
+    } else if (path === '/rate') {
+      if (hits[path]! === 1) {
+        res.writeHead(429, { 'Retry-After': '0' }).end('slow down');
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
+      }
+    } else if (path === '/bad') {
+      res.writeHead(400).end('bad request');
+    } else if (path === '/hang') {
+      // never respond — forces the per-attempt timeout
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  const { logEvent } = await import('@storefront/db');
+  const log = (type: string, payload: Record<string, unknown>) =>
+    logEvent(ctx.db, type, null, payload);
+  const fast = { baseDelayMs: 5, maxDelayMs: 20, log };
+
+  try {
+    const flaky = await fetchJson<{ ok: boolean }>(`${base}/flaky`, {}, { service: 'test', ...fast });
+    check('transient 5xx recovers via retry', flaky.ok && hits['/flaky'] === 3, `${hits['/flaky']} attempts`);
+
+    const rate = await fetchJson<{ ok: boolean }>(`${base}/rate`, {}, { service: 'test', ...fast });
+    check('429 + Retry-After honored then succeeds', rate.ok && hits['/rate'] === 2);
+
+    let badErr: unknown = null;
+    await fetchJson(`${base}/bad`, {}, { service: 'test', ...fast }).catch((e) => (badErr = e));
+    check(
+      'non-retryable 400 fails fast (single attempt, typed error)',
+      badErr instanceof AdapterError && badErr.status === 400 && hits['/bad'] === 1,
+    );
+
+    let hangErr: unknown = null;
+    await fetchWithRetry(`${base}/hang`, {}, { service: 'test', timeoutMs: 150, retries: 1, ...fast })
+      .catch((e) => (hangErr = e));
+    check(
+      'hung endpoint hits per-attempt timeout, retries, then fails',
+      hangErr instanceof AdapterError && hits['/hang'] === 2,
+      `${hits['/hang'] ?? 0} attempts`,
+    );
+
+    const { listEvents } = await import('@storefront/db');
+    const netEvents = listEvents(ctx.db).map((e) => e.type);
+    check('adapter.retry events reach the audit log', netEvents.includes('adapter.retry'));
+    check('adapter.error events reach the audit log', netEvents.includes('adapter.error'));
+    const payloads = listEvents(ctx.db)
+      .filter((e) => e.type.startsWith('adapter.'))
+      .map((e) => e.payload_json ?? '');
+    check('adapter event payloads never contain query strings (no secrets)', payloads.every((p) => !p.includes('?')));
+  } finally {
+    server.close();
   }
 }
 

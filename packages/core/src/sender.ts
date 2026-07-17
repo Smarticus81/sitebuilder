@@ -78,6 +78,7 @@ export async function sendApprovedMessage(
     replyTo: config.replyTo,
     subject: message.subject ?? '',
     text: message.body ?? '',
+    idempotencyKey: `storefront-msg-${messageId}`,
     headers: {
       'List-Unsubscribe': `<${unsubFromBody(message.body)}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',

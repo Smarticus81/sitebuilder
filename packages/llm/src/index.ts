@@ -1,6 +1,8 @@
 // One module wraps ALL LLM calls. Mock provider is deterministic so the
 // pipeline runs offline; AnthropicProvider activates when ANTHROPIC_API_KEY set.
 
+import { fetchJson, type NetLogger } from '@storefront/net';
+
 export interface DemoCopyInput {
   name: string;
   category: string;
@@ -89,27 +91,28 @@ export class AnthropicLlmProvider implements LlmProvider {
   constructor(
     private readonly apiKey: string,
     private readonly model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-8',
+    private readonly log?: NetLogger,
   ) {}
 
   private async complete(system: string, user: string): Promise<string> {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
+    const data = await fetchJson<{ content: { type: string; text?: string }[] }>(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1024,
+          system,
+          messages: [{ role: 'user', content: user }],
+        }),
       },
-      body: JSON.stringify({
-        model: this.model,
-        max_tokens: 1024,
-        system,
-        messages: [{ role: 'user', content: user }],
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Anthropic call failed: ${res.status} ${await res.text()}`);
-    }
-    const data = (await res.json()) as { content: { type: string; text?: string }[] };
+      { service: 'llm', timeoutMs: 60_000, log: this.log },
+    );
     return data.content.map((c) => c.text ?? '').join('').trim();
   }
 
@@ -155,7 +158,10 @@ function trim(s: string, n = 90): string {
 
 export function createLlmProvider(
   env: NodeJS.ProcessEnv = process.env,
+  log?: NetLogger,
 ): LlmProvider {
   const key = env.ANTHROPIC_API_KEY?.trim();
-  return key ? new AnthropicLlmProvider(key) : new MockLlmProvider();
+  return key
+    ? new AnthropicLlmProvider(key, env.ANTHROPIC_MODEL ?? 'claude-opus-4-8', log)
+    : new MockLlmProvider();
 }

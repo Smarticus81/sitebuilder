@@ -1,4 +1,5 @@
-import { getDb, type DB } from '@storefront/db';
+import { getDb, logEvent, type DB } from '@storefront/db';
+import type { NetLogger } from '@storefront/net';
 import { createPlacesProvider, type PlacesProvider } from '@storefront/places';
 import { createLlmProvider, type LlmProvider } from '@storefront/llm';
 import { createEmailProvider, type EmailProvider } from '@storefront/email';
@@ -21,13 +22,15 @@ export function createContext(env: NodeJS.ProcessEnv = process.env): Context {
   if (cached) return cached;
   const db = getDb();
   const config = loadConfig(db, env);
+  // Adapter retries/failures land in the audit log alongside pipeline events.
+  const netLog: NetLogger = (type, payload) => logEvent(db, type, null, payload);
   cached = {
     db,
     config,
-    places: createPlacesProvider(env),
-    llm: createLlmProvider(env),
-    email: createEmailProvider(env),
-    deploy: createDeployProvider(env),
+    places: createPlacesProvider(env, netLog),
+    llm: createLlmProvider(env, netLog),
+    email: createEmailProvider(env, netLog),
+    deploy: createDeployProvider(env, netLog),
   };
   return cached;
 }

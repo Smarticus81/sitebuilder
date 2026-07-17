@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fetchJson, fetchWithRetry, type NetLogger } from '@storefront/net';
 
 export interface DeployInput {
   slug: string; // bare slug, e.g. "the-clip-joint"
@@ -41,45 +42,104 @@ export class LocalDeployProvider implements DeployProvider {
 }
 
 /**
- * Vercel preview deploy. Activates when VERCEL_TOKEN is set. Creates a
- * deployment with a single inline index.html file. (Custom-subdomain aliasing
- * is left as a follow-up; the generated *.vercel.app preview URL is returned.)
+ * Vercel deploy. Activates when VERCEL_TOKEN is set. Creates a deployment with
+ * a single inline index.html, then aliases it to the demo subdomain (the base
+ * domain must be added to the Vercel account for the alias to stick — if it
+ * isn't, we log the failure and fall back to the *.vercel.app preview URL).
+ * unpublish() removes the aliases and deletes every deployment for the slug.
  */
 export class VercelDeployProvider implements DeployProvider {
   readonly mode = 'live' as const;
-  constructor(private readonly token: string) {}
+  constructor(
+    private readonly token: string,
+    private readonly teamId?: string,
+    private readonly log?: NetLogger,
+  ) {}
 
-  async deploy(input: DeployInput): Promise<DeployResult> {
-    const res = await fetch('https://api.vercel.com/v13/deployments', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        name: `storefront-${input.slug}`,
-        target: 'preview',
-        files: [{ file: 'index.html', data: input.html }],
-        projectSettings: { framework: null },
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Vercel deploy failed: ${res.status} ${await res.text()}`);
-    }
-    const data = (await res.json()) as { url?: string };
-    return { url: data.url ? `https://${data.url}` : '', provider: 'vercel' };
+  private url(path: string, params: Record<string, string> = {}): string {
+    const u = new URL(`https://api.vercel.com${path}`);
+    if (this.teamId) u.searchParams.set('teamId', this.teamId);
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+    return u.toString();
   }
 
-  async unpublish(_slug: string): Promise<void> {
-    // Real impl: look up deployment id by name and DELETE it. Left for Phase 2.
+  private get headers(): Record<string, string> {
+    return { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' };
+  }
+
+  private appName(slug: string): string {
+    return `storefront-${slug}`;
+  }
+
+  async deploy(input: DeployInput): Promise<DeployResult> {
+    const data = await fetchJson<{ id: string; url?: string }>(
+      this.url('/v13/deployments'),
+      {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({
+          name: this.appName(input.slug),
+          target: 'production',
+          files: [{ file: 'index.html', data: input.html }],
+          projectSettings: { framework: null },
+        }),
+      },
+      { service: 'deploy', timeoutMs: 60_000, log: this.log },
+    );
+
+    const previewUrl = data.url ? `https://${data.url}` : '';
+
+    // Alias the deployment to the demo subdomain. Best-effort: a missing base
+    // domain must not fail the build, but it IS logged for the operator.
+    try {
+      await fetchJson(
+        this.url(`/v2/deployments/${data.id}/aliases`),
+        {
+          method: 'POST',
+          headers: this.headers,
+          body: JSON.stringify({ alias: input.subdomain }),
+        },
+        { service: 'deploy', log: this.log },
+      );
+      return { url: `https://${input.subdomain}`, provider: 'vercel' };
+    } catch {
+      this.log?.('deploy.alias_failed', {
+        subdomain: input.subdomain,
+        fallback: previewUrl,
+        hint: 'Add the demo base domain to your Vercel account to enable custom subdomains',
+      });
+      return { url: previewUrl, provider: 'vercel' };
+    }
+  }
+
+  async unpublish(slug: string): Promise<void> {
+    // Every deployment created for this slug (there may be several rebuilds).
+    const list = await fetchJson<{ deployments?: { uid: string }[] }>(
+      this.url('/v6/deployments', { app: this.appName(slug), limit: '100' }),
+      { method: 'GET', headers: this.headers },
+      { service: 'deploy', log: this.log },
+    );
+    for (const d of list.deployments ?? []) {
+      const res = await fetchWithRetry(
+        this.url(`/v13/deployments/${d.uid}`),
+        { method: 'DELETE', headers: this.headers },
+        { service: 'deploy', log: this.log },
+      );
+      // 404 means already gone — fine. Anything else non-2xx is a real failure.
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`Vercel delete failed for ${d.uid}: ${res.status}`);
+      }
+    }
+    this.log?.('deploy.unpublished', { slug, deployments: (list.deployments ?? []).length });
   }
 }
 
 export function createDeployProvider(
   env: NodeJS.ProcessEnv = process.env,
+  log?: NetLogger,
 ): DeployProvider {
   const token = env.VERCEL_TOKEN?.trim();
-  if (token) return new VercelDeployProvider(token);
+  if (token) return new VercelDeployProvider(token, env.VERCEL_TEAM_ID?.trim() || undefined, log);
   const port = env.WORKER_PORT ?? '8787';
   const previewBase = env.DEMO_PREVIEW_BASE ?? `http://localhost:${port}`;
   return new LocalDeployProvider(previewBase);

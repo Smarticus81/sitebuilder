@@ -1,3 +1,4 @@
+import { fetchJson, type NetLogger } from '@storefront/net';
 import { FORT_WORTH_SALONS } from './fixtures.js';
 import type { PlaceResult, PlacesProvider, SearchParams } from './types.js';
 
@@ -42,40 +43,55 @@ export class MockPlacesProvider implements PlacesProvider {
 // normalized to PlaceResult. Activates only when GOOGLE_PLACES_API_KEY is set.
 export class GooglePlacesProvider implements PlacesProvider {
   readonly mode = 'live' as const;
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly log?: NetLogger,
+  ) {}
 
   async textSearch(params: SearchParams): Promise<PlaceResult[]> {
-    const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
-        'X-Goog-FieldMask': [
-          'places.id',
-          'places.displayName',
-          'places.primaryType',
-          'places.formattedAddress',
-          'places.nationalPhoneNumber',
-          'places.location',
-          'places.websiteUri',
-          'places.rating',
-          'places.userRatingCount',
-          'places.businessStatus',
-          'places.photos',
-          'places.reviews',
-          'places.regularOpeningHours',
-        ].join(','),
-      },
-      body: JSON.stringify({
-        textQuery: `${params.category} in ${params.location}`,
-        maxResultCount: Math.min(params.limit ?? 20, 20),
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Places searchText failed: ${res.status} ${await res.text()}`);
-    }
-    const data = (await res.json()) as { places?: GooglePlace[] };
-    return (data.places ?? []).map(normalize);
+    const want = params.limit ?? 20;
+    const out: PlaceResult[] = [];
+    let pageToken: string | undefined;
+
+    // searchText caps pageSize at 20; larger limits need the nextPageToken loop.
+    do {
+      const data = await fetchJson<{ places?: GooglePlace[]; nextPageToken?: string }>(
+        'https://places.googleapis.com/v1/places:searchText',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': this.apiKey,
+            'X-Goog-FieldMask': [
+              'nextPageToken',
+              'places.id',
+              'places.displayName',
+              'places.primaryType',
+              'places.formattedAddress',
+              'places.nationalPhoneNumber',
+              'places.location',
+              'places.websiteUri',
+              'places.rating',
+              'places.userRatingCount',
+              'places.businessStatus',
+              'places.photos',
+              'places.reviews',
+              'places.regularOpeningHours',
+            ].join(','),
+          },
+          body: JSON.stringify({
+            textQuery: `${params.category} in ${params.location}`,
+            pageSize: Math.min(want - out.length, 20),
+            ...(pageToken ? { pageToken } : {}),
+          }),
+        },
+        { service: 'places', log: this.log },
+      );
+      out.push(...(data.places ?? []).map(normalize));
+      pageToken = data.nextPageToken;
+    } while (pageToken && out.length < want);
+
+    return out.slice(0, want);
   }
 
   photoUrl(ref: string): string {
@@ -125,7 +141,8 @@ function normalize(p: GooglePlace): PlaceResult {
 // ── Factory ──────────────────────────────────────────────────────────────────
 export function createPlacesProvider(
   env: NodeJS.ProcessEnv = process.env,
+  log?: NetLogger,
 ): PlacesProvider {
   const key = env.GOOGLE_PLACES_API_KEY?.trim();
-  return key ? new GooglePlacesProvider(key) : new MockPlacesProvider();
+  return key ? new GooglePlacesProvider(key, log) : new MockPlacesProvider();
 }
