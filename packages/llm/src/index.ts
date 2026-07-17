@@ -8,7 +8,10 @@ export interface DemoCopyInput {
   category: string;
   city: string;
   reviews: string[];
+  /** Industry-default service names (from the template theme). */
   services?: string[];
+  /** Per-template review-mining guidance for the copywriter. */
+  industryHint?: string;
 }
 
 export interface DemoCopy {
@@ -47,23 +50,60 @@ function servicesFor(category: string, fallback?: string[]): string[] {
   return DEFAULT_SERVICES[category] ?? fallback ?? ['Our Services', 'Book a Visit'];
 }
 
+// Deterministic industry flavor for the mock copywriter.
+const MOCK_FLAVOR: { match: (c: string) => boolean; noun: string; tagline: (city: string) => string; cta: string }[] = [
+  {
+    match: (c) => c.includes('barber'),
+    noun: 'barbershop',
+    tagline: (city) => `${city}'s sharpest cuts, every chair.`,
+    cta: 'Call or book your chair today',
+  },
+  {
+    match: (c) => /restaurant|taco|pizza|food|cafe|coffee|bakery|grill|bbq|diner/.test(c),
+    noun: 'kitchen',
+    tagline: (city) => `${city}'s table worth talking about.`,
+    cta: 'Call ahead or walk right in',
+  },
+  {
+    match: (c) => /plumb|roof|electric|hvac|contractor|handyman|remodel|landscap|air_condition/.test(c),
+    noun: 'crew',
+    tagline: () => `Done right, priced straight.`,
+    cta: 'Call for a free quote',
+  },
+  {
+    match: (c) => /car_repair|auto|mechanic|tire|transmission|body_shop|oil_change/.test(c),
+    noun: 'garage',
+    tagline: () => `Honest wrenching, no surprises.`,
+    cta: 'Call the shop today',
+  },
+  {
+    match: (c) => /dent|med_spa|medspa|spa|dermatolog|aesthetic|wellness/.test(c),
+    noun: 'practice',
+    tagline: () => `Feel looked after, not processed.`,
+    cta: 'Book your visit today',
+  },
+];
+
 // ── Mock ─────────────────────────────────────────────────────────────────────
 export class MockLlmProvider implements LlmProvider {
   readonly mode = 'mock' as const;
 
   async demoCopy(input: DemoCopyInput): Promise<DemoCopy> {
-    const isBarber = input.category.includes('barber');
-    const noun = isBarber ? 'barbershop' : 'salon';
-    return {
-      tagline: isBarber
-        ? `${input.city}'s sharpest cuts, every chair.`
-        : `Look your best. Feel even better.`,
-      about:
-        `${input.name} is a ${input.city} ${noun} our neighbors keep coming back to. ` +
-        `Guests describe it as ${input.reviews[0] ? `"${trim(input.reviews[0])}"` : 'warm, skilled, and unhurried'}. ` +
-        `Walk in for a quick refresh or book ahead for the full experience — either way you leave looking great.`,
-      services: servicesFor(input.category, input.services),
+    const cat = input.category.toLowerCase();
+    const flavor = MOCK_FLAVOR.find((f) => f.match(cat)) ?? {
+      noun: 'salon',
+      tagline: () => `Look your best. Feel even better.`,
       cta: 'Call or book your chair today',
+      match: () => true,
+    };
+    return {
+      tagline: flavor.tagline(input.city),
+      about:
+        `${input.name} is a ${input.city} ${flavor.noun} our neighbors keep coming back to. ` +
+        `Guests describe it as ${input.reviews[0] ? `"${trim(input.reviews[0])}"` : 'warm, skilled, and unhurried'}. ` +
+        `Stop in for a quick visit or book ahead for the full experience — either way you leave glad you came.`,
+      services: servicesFor(input.category, input.services),
+      cta: flavor.cta,
     };
   }
 
@@ -127,6 +167,8 @@ export class AnthropicLlmProvider implements LlmProvider {
       'You are a senior copywriter for small local businesses. Return ONLY JSON.',
       `Write website copy for a local business demo.\n` +
         `Business: ${input.name}\nCategory: ${input.category}\nCity: ${input.city}\n` +
+        (input.industryHint ? `Industry guidance: ${input.industryHint}\n` : '') +
+        (input.services?.length ? `Typical services for this industry: ${input.services.join(', ')}\n` : '') +
         `Top reviews:\n${input.reviews.map((r) => `- ${r}`).join('\n')}\n\n` +
         `Return JSON: { "tagline": string (<=8 words), "about": string (2-3 sentences), ` +
         `"services": string[] (4 items), "cta": string (<=6 words) }. ` +

@@ -8,6 +8,10 @@ const MOCK_EMAILS: Record<string, string | null> = {
   'latherandfadefw.com': 'shop@latherandfadefw.com',
   'bombshellbeautyfw.com': 'hello@bombshellbeautyfw.com',
   'polishedmodern.com': 'hi@polishedmodern.com',
+  'lafamiliatacosfw.com': 'hola@lafamiliatacosfw.com',
+  'bigtexplumbingfw.com': 'office@bigtexplumbingfw.com',
+  'precisionautofw.com': 'service@precisionautofw.com',
+  'radiancemedspafw.com': 'frontdesk@radiancemedspafw.com',
 };
 
 function host(url: string): string {

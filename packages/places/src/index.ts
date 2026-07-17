@@ -1,5 +1,5 @@
 import { fetchJson, type NetLogger } from '@storefront/net';
-import { FORT_WORTH_SALONS } from './fixtures.js';
+import { FORT_WORTH_SALONS, FORT_WORTH_MIXED } from './fixtures.js';
 import type { PlaceResult, PlacesProvider, SearchParams } from './types.js';
 
 export * from './types.js';
@@ -13,12 +13,27 @@ export class MockPlacesProvider implements PlacesProvider {
 
   async textSearch(params: SearchParams): Promise<PlaceResult[]> {
     const cat = params.category.toLowerCase();
-    const matchesCat =
-      cat.includes('salon') ||
-      cat.includes('barber') ||
-      cat.includes('hair') ||
-      cat === '';
-    const results = matchesCat ? FORT_WORTH_SALONS : [];
+    const matches = (...keys: string[]) => keys.some((k) => cat.includes(k));
+
+    let results: PlaceResult[];
+    if (cat === '') {
+      results = [...FORT_WORTH_SALONS, ...FORT_WORTH_MIXED];
+    } else if (matches('salon', 'barber', 'hair')) {
+      results = FORT_WORTH_SALONS;
+    } else {
+      // Match the mixed-industry fixtures by their own category strings.
+      results = FORT_WORTH_MIXED.filter((p) => {
+        const pc = p.category.toLowerCase();
+        return (
+          cat.includes(pc) ||
+          pc.includes(cat) ||
+          (matches('restaurant', 'taco', 'food') && pc === 'restaurant') ||
+          (matches('plumb', 'contractor', 'trades') && pc === 'plumber') ||
+          (matches('auto', 'car', 'mechanic') && pc === 'car_repair') ||
+          (matches('spa', 'med', 'dental', 'dentist') && pc === 'med_spa')
+        );
+      });
+    }
     return results.slice(0, params.limit ?? results.length);
   }
 

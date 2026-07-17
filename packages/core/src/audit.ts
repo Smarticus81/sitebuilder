@@ -20,6 +20,10 @@ const MOCK_LIGHTHOUSE: Record<string, LighthouseScores> = {
   'latherandfadefw.com': { performance: 47, seo: 51, accessibility: 60, bestPractices: 50 },
   'bombshellbeautyfw.com': { performance: 44, seo: 46, accessibility: 55, bestPractices: 41 },
   'polishedmodern.com': { performance: 92, seo: 96, accessibility: 94, bestPractices: 98 },
+  'lafamiliatacosfw.com': { performance: 38, seo: 44, accessibility: 57, bestPractices: 46 },
+  'bigtexplumbingfw.com': { performance: 49, seo: 40, accessibility: 63, bestPractices: 51 },
+  'precisionautofw.com': { performance: 45, seo: 53, accessibility: 59, bestPractices: 44 },
+  'radiancemedspafw.com': { performance: 42, seo: 48, accessibility: 54, bestPractices: 49 },
 };
 
 export class MockAuditProvider implements AuditProvider {
@@ -129,6 +133,38 @@ const MOCK_AUDITS: Record<string, WebsiteAudit> = {
     lighthouse: MOCK_LIGHTHOUSE['polishedmodern.com']!,
     copyrightYear: 2026,
     notes: ['Modern, fast, mobile-friendly site already in place'],
+  }),
+  'lafamiliatacosfw.com': verdict({
+    reachable: true,
+    https: false,
+    mobileViewport: false,
+    lighthouse: MOCK_LIGHTHOUSE['lafamiliatacosfw.com']!,
+    copyrightYear: 2017,
+    notes: ['No HTTPS', 'Menu is a scanned PDF', 'Copyright stuck at 2017'],
+  }),
+  'bigtexplumbingfw.com': verdict({
+    reachable: true,
+    https: false,
+    mobileViewport: false,
+    lighthouse: MOCK_LIGHTHOUSE['bigtexplumbingfw.com']!,
+    copyrightYear: 2018,
+    notes: ['No HTTPS', 'No mobile viewport meta tag', 'No click-to-call on mobile'],
+  }),
+  'precisionautofw.com': verdict({
+    reachable: true,
+    https: true,
+    mobileViewport: false,
+    lighthouse: MOCK_LIGHTHOUSE['precisionautofw.com']!,
+    copyrightYear: 2016,
+    notes: ['Copyright says 2016', 'Not mobile-friendly', 'Slow on phones'],
+  }),
+  'radiancemedspafw.com': verdict({
+    reachable: true,
+    https: false,
+    mobileViewport: false,
+    lighthouse: MOCK_LIGHTHOUSE['radiancemedspafw.com']!,
+    copyrightYear: 2019,
+    notes: ['No HTTPS', 'No online booking link', 'Not mobile-friendly'],
   }),
 };
 

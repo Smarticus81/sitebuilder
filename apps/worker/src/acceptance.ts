@@ -162,7 +162,58 @@ async function run() {
     check(`logged: ${t}`, types.has(t));
   }
 
-  // ── 9. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 9. Phase B: five industry templates on the shared engine ──────────────
+  section('Phase B — industry templates (restaurant, trades, auto, med spa)');
+  const { templateKeyFor } = await import('@storefront/core');
+  const expectTemplates: Record<string, string> = {
+    restaurant: 'restaurant',
+    plumber: 'contractor',
+    'auto repair': 'auto-shop',
+    'med spa': 'dental-medspa',
+  };
+  for (const cat of Object.keys(expectTemplates)) {
+    await prospect(ctx, { category: cat, location: 'Fort Worth, TX' });
+  }
+  await qualifyAll(ctx);
+  const newBad = listLeads(ctx.db, 'qualified').filter((l) => l.segment === 'bad');
+  check('one bad-site lead per new industry', newBad.length === 4, `${newBad.length} qualified`);
+
+  for (const lead of newBad) await buildOne(ctx, lead.id);
+  const { readFileSync } = await import('node:fs');
+  for (const [cat, expected] of Object.entries(expectTemplates)) {
+    const lead = newBad.find((l) => templateKeyFor(l.category) === expected);
+    const demo = lead ? getDemoByLead(ctx.db, lead.id) : undefined;
+    const file = lead ? resolve(process.cwd(), 'demos-out', slugify(lead.name), 'index.html') : '';
+    const html = file && existsSync(file) ? readFileSync(file, 'utf8') : '';
+    check(
+      `"${cat}" lead renders the ${expected} template`,
+      !!demo && demo.template === expected && html.includes(`data-template="${expected}"`),
+      lead?.name ?? 'no matching lead',
+    );
+    check(
+      `${expected} demo is self-contained + mobile-first (no scripts/external CSS, has viewport)`,
+      !!html &&
+        html.includes('name="viewport"') &&
+        !html.includes('<script') &&
+        !html.includes('rel="stylesheet"'),
+    );
+    check(
+      `${expected} demo carries the demo-preview banner`,
+      !!html && html.includes('Demo preview prepared by'),
+    );
+  }
+  check('unknown category falls back to the default template', templateKeyFor('tanning_studio_xyz') === 'salon-barber');
+  check(
+    'industry templates render distinct section headings',
+    ['From the kitchen', 'What we handle', 'In the bay', 'Treatments'].every((h) =>
+      newBad.some((l) => {
+        const f = resolve(process.cwd(), 'demos-out', slugify(l.name), 'index.html');
+        return existsSync(f) && readFileSync(f, 'utf8').includes(h);
+      }),
+    ),
+  );
+
+  // ── 10. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
