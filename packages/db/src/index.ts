@@ -85,6 +85,10 @@ export function resetDb(db: DB): void {
     DELETE FROM sms_messages;
     DELETE FROM sms_suppression;
     DELETE FROM sequences;
+    DELETE FROM ab_assignments;
+    DELETE FROM experiments;
+    DELETE FROM proposals;
+    DELETE FROM domain_requests;
     DELETE FROM demos;
     DELETE FROM suppression;
     DELETE FROM leads;

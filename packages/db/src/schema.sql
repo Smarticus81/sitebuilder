@@ -170,3 +170,22 @@ CREATE TABLE IF NOT EXISTS domain_requests (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_domain_requests_lead ON domain_requests(lead_id);
+
+-- A/B testing (Phase 4). Assignment is deterministic and LOGGED; a winner is
+-- only ever adopted by explicit human conclusion — never auto-promoted.
+CREATE TABLE IF NOT EXISTS ab_assignments (
+  experiment TEXT NOT NULL,
+  lead_id    INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  variant    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (experiment, lead_id)
+);
+
+CREATE TABLE IF NOT EXISTS experiments (
+  name         TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,          -- 'subject' | 'template'
+  variants     TEXT NOT NULL,          -- JSON array of variant names
+  winner       TEXT,                   -- set ONLY by a human conclusion
+  concluded_by TEXT,
+  concluded_at TEXT
+);

@@ -30,6 +30,9 @@ import {
   requestDomainPurchase,
   decideDomainRequest,
   closeLead,
+  computeAnalytics,
+  concludeExperiment,
+  recordDemoView,
 } from '@storefront/core';
 import {
   prospect,
@@ -140,6 +143,27 @@ app.get('/api/leads/:id', (req, res) => {
 
 app.get('/api/events', (_req, res) => res.json(listEvents(ctx.db)));
 app.get('/api/suppression', (_req, res) => res.json(listSuppression(ctx.db)));
+
+// ── Phase 4: analytics + A/B ─────────────────────────────────────────────────
+app.get('/api/analytics', (_req, res) => res.json(computeAnalytics(ctx.db)));
+
+// Human-only: record the winning variant (reporting never auto-promotes).
+app.post(
+  '/api/experiments/:name/conclude',
+  wrap(async (req, res) => {
+    const winner = String(req.body?.winner ?? '');
+    const by = String(req.body?.concludedBy ?? 'dashboard-user');
+    concludeExperiment(ctx.db, String(req.params.name), winner, by);
+    res.json({ ok: true });
+  }),
+);
+
+// 1px demo-view beacon (image-only tracking; templates stay script-free).
+const BEACON_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+app.get('/beacon/demo/:slug', (req, res) => {
+  recordDemoView(ctx.db, String(req.params.slug));
+  res.type('image/gif').send(BEACON_GIF);
+});
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 app.post(

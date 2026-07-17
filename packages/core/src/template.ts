@@ -21,6 +21,13 @@ export interface TemplateData {
   reviews: string[];
   /** Footer attribution — mandatory, marks the page as a temporary demo. */
   demoFooter: string;
+  /** Optional 1px view beacon (image only — templates stay script-free). */
+  beaconUrl?: string;
+}
+
+export interface RenderOptions {
+  /** A/B template variant: 'warm' swaps the theme's accent colors. */
+  accentVariant?: string;
 }
 
 export interface Theme {
@@ -135,8 +142,11 @@ const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Render a one-page demo for the given template key. */
-export function renderTemplate(key: string, d: TemplateData): string {
-  const t = THEMES[key] ?? THEMES[DEFAULT_TEMPLATE]!;
+export function renderTemplate(key: string, d: TemplateData, opts: RenderOptions = {}): string {
+  const base = THEMES[key] ?? THEMES[DEFAULT_TEMPLATE]!;
+  // 'warm' accent variant: swap primary/secondary accents (A/B experiment).
+  const t =
+    opts.accentVariant === 'warm' ? { ...base, accent: base.accent2, accent2: base.accent } : base;
   const hero = d.photos[0] ?? '';
   const gallery = d.photos.slice(1, 4);
   const telHref = d.phone ? `tel:${d.phone.replace(/[^0-9+]/g, '')}` : '#book';
@@ -266,6 +276,7 @@ export function renderTemplate(key: string, d: TemplateData): string {
     <strong>${esc(d.businessName)}</strong> · ${esc(d.address ?? d.city)}<br/>
     <div class="demo-note">${esc(d.demoFooter)}</div>
   </div></footer>
+  ${d.beaconUrl ? `<img src="${esc(d.beaconUrl)}" alt="" width="1" height="1" style="position:absolute;opacity:0" />` : ''}
 </body>
 </html>`;
 }

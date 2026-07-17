@@ -70,6 +70,9 @@ export default function App() {
             <span className="text-lg font-extrabold tracking-tight">Storefront</span>
           </Link>
           <span className="text-xs text-white/35">{health?.config.senderBusiness}</span>
+          <Link to="/analytics" className="rounded-lg bg-white/8 px-2.5 py-1 text-xs text-white/70 transition hover:bg-white/12">
+            analytics
+          </Link>
         </div>
         <div className="flex items-center gap-2 text-xs">
           {health &&

@@ -229,7 +229,11 @@ async function run() {
   section('Phase C — proposals, domain requests (approval-only), won/lost');
   await testCloseFlow(ctx);
 
-  // ── 14. Adapter hardening: retry / backoff / timeout ───────────────────────
+  // ── 14. Phase D: analytics + A/B ─────────────────────────────────────────────
+  section('Phase D — analytics, demo views, opens, A/B experiments');
+  await testAnalyticsAndAb(ctx);
+
+  // ── 15. Adapter hardening: retry / backoff / timeout ───────────────────────
   section('Phase A — adapter hardening (retry, Retry-After, timeout)');
   await testAdapterHardening(ctx);
 
@@ -360,6 +364,79 @@ async function testSequencing(ctx: ReturnType<typeof createContext>) {
   for (const t of ['sequence.drafted', 'sequence.approved', 'sequence.step_sent', 'sequence.canceled', 'sequence.completed']) {
     check(`logged: ${t}`, seqEvents.has(t));
   }
+}
+
+/**
+ * Analytics + A/B: metrics derive from the pipeline the earlier sections
+ * built; variant assignment is deterministic + logged; winners are only
+ * reported — concluding is a human act and changes no behavior.
+ */
+async function testAnalyticsAndAb(ctx: ReturnType<typeof createContext>) {
+  const {
+    computeAnalytics, recordDemoView, handleInboundEvent, assignVariant, concludeExperiment, EXPERIMENTS,
+  } = await import('@storefront/core');
+  const { listEvents } = await import('@storefront/db');
+
+  // A/B assignment happened during draft/build stages — verify it's logged + stable.
+  const assigned = ctx.db.prepare(`SELECT COUNT(*) n FROM ab_assignments`).get() as { n: number };
+  check('A/B assignments were recorded during draft/build', assigned.n >= 10, `${assigned.n} assignments`);
+  check('every assignment has an ab.assigned audit event',
+    listEvents(ctx.db).filter((e) => e.type === 'ab.assigned').length >= assigned.n);
+  const someLead = listLeads(ctx.db).find((l) => l.status !== 'discovered')!;
+  const v1 = assignVariant(ctx.db, 'subject-style', someLead.id);
+  const v2 = assignVariant(ctx.db, 'subject-style', someLead.id);
+  check('variant assignment is stable per lead', v1 === v2);
+  const variants = new Set(
+    (ctx.db.prepare(`SELECT DISTINCT variant FROM ab_assignments WHERE experiment='subject-style'`).all() as { variant: string }[])
+      .map((r) => r.variant),
+  );
+  check('both subject variants are in play', variants.has('benefit') && variants.has('question'));
+  const questionSubject = ctx.db
+    .prepare(
+      `SELECT COUNT(*) n FROM messages m JOIN ab_assignments a
+        ON a.lead_id = m.lead_id AND a.experiment = 'subject-style' AND a.variant = 'question'
+       WHERE m.channel = 'email' AND m.followup_step IS NULL AND m.subject LIKE 'Quick question%'`,
+    )
+    .get() as { n: number };
+  check('question-variant drafts actually use the alternate subject', questionSubject.n >= 1, `${questionSubject.n}`);
+
+  // Demo views (beacon) + opens (provider webhook).
+  const viewed = recordDemoView(ctx.db, slugify(someLead.name));
+  check('demo-view beacon resolves slug → lead and logs demo.viewed',
+    viewed && listEvents(ctx.db, someLead.id).some((e) => e.type === 'demo.viewed'));
+  check('unknown beacon slugs are ignored safely', recordDemoView(ctx.db, 'not-a-real-slug') === false);
+  const opened = listLeads(ctx.db).find((l) => !!l.contact_email)!;
+  handleInboundEvent(ctx.db, { kind: 'open', email: opened.contact_email! });
+  check('email.opened events record opens', listEvents(ctx.db).some((e) => e.type === 'open.recorded'));
+
+  // Analytics numbers line up with what this run actually did.
+  const a = computeAnalytics(ctx.db);
+  check('analytics: sends/replies/close figures match pipeline state',
+    a.totals.emailsSent >= 4 && a.totals.smsSent === 1 && a.totals.replies >= 1 &&
+      a.totals.won === 1 && a.totals.lost >= 1 && a.totals.closeRate! > 0,
+    `emails ${a.totals.emailsSent}, sms ${a.totals.smsSent}, replies ${a.totals.replies}, won ${a.totals.won}`);
+  check('analytics: MRR comes from the won lead\'s proposal', a.totals.mrrCents === 5000, `${a.totals.mrrCents}c`);
+  check('analytics: per-template breakdown covers all built templates', a.byTemplate.length >= 5, `${a.byTemplate.length} templates`);
+  check('analytics: per-segment breakdown present', a.bySegment.some((r) => r.key === 'bad') && a.bySegment.some((r) => r.key === 'none'));
+
+  // Winners: reported, never auto-promoted.
+  const report = a.experiments.find((e) => e.name === 'subject-style')!;
+  check('experiment report lists both variants with stats', report.variants.length === 2 && report.winner === null);
+  concludeExperiment(ctx.db, 'subject-style', 'question', 'human-operator');
+  const after = computeAnalytics(ctx.db).experiments.find((e) => e.name === 'subject-style')!;
+  check('human conclusion recorded with the decider', after.winner === 'question' && after.concludedBy === 'human-operator');
+  const unassigned = listLeads(ctx.db).find(
+    (l) =>
+      !ctx.db
+        .prepare(`SELECT 1 FROM ab_assignments WHERE experiment = 'subject-style' AND lead_id = ?`)
+        .get(l.id),
+  )!;
+  const freshVariant = assignVariant(ctx.db, 'subject-style', unassigned.id);
+  check(
+    'conclusion does NOT auto-promote — new assignments still split deterministically',
+    freshVariant === EXPERIMENTS[0]!.variants[unassigned.id % 2]!,
+    `lead ${unassigned.id} → ${freshVariant}`,
+  );
 }
 
 /**

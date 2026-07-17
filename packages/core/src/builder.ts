@@ -13,6 +13,8 @@ import type { StorefrontConfig } from './config.js';
 import type { DeployProvider } from './deploy.js';
 import { renderTemplate, templateKeyFor, THEMES, type TemplateData } from './template.js';
 import { slugify, subdomainFor } from './slug.js';
+import { assignVariant } from './ab.js';
+import { publicBaseUrl } from './compliance.js';
 
 export interface BuildDeps {
   db: DB;
@@ -84,9 +86,12 @@ export async function buildDemo(deps: BuildDeps, lead: Lead): Promise<Demo> {
     reviewCount: lead.review_count,
     reviews,
     demoFooter: `Demo preview prepared by ${config.senderBusiness} · not affiliated with ${lead.name} · this is a temporary preview`,
+    beaconUrl: `${publicBaseUrl()}/beacon/demo/${slug}`,
   };
 
-  const html = renderTemplate(templateKey, data);
+  // A/B: template accent variant — assignment stable per lead, audit-logged.
+  const accentVariant = assignVariant(db, 'template-accent', lead.id);
+  const html = renderTemplate(templateKey, data, { accentVariant });
   const { url, provider } = await deploy.deploy({ slug, subdomain, html });
 
   const demo = insertDemo(db, {

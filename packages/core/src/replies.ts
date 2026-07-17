@@ -11,8 +11,8 @@ import { addSuppression, logEvent, setLeadStatus, type DB, type Lead } from '@st
 import { cancelSequencesForLead } from './sequence.js';
 
 export interface InboundEmailEvent {
-  kind: 'reply' | 'bounce' | 'complaint';
-  /** The prospect's address (sender of a reply; recipient of a bounce). */
+  kind: 'reply' | 'bounce' | 'complaint' | 'open';
+  /** The prospect's address (sender of a reply; recipient of a bounce/open). */
   email: string;
   subject?: string;
 }
@@ -60,6 +60,10 @@ export function handleInboundEvent(db: DB, evt: InboundEmailEvent): InboundResul
       logEvent(db, 'complaint.recorded', lead.id, { email: evt.email });
       return { matched: true, leadId: lead.id, action: 'suppressed' };
     }
+    case 'open': {
+      logEvent(db, 'open.recorded', lead.id, { email: evt.email });
+      return { matched: true, leadId: lead.id, action: 'open-recorded' };
+    }
   }
 }
 
@@ -96,7 +100,11 @@ export function parseResendWebhook(payload: ResendWebhookPayload): InboundEmailE
     const email = addr(payload.data?.to);
     return email ? { kind: 'complaint', email } : null;
   }
-  return null; // delivery/open events etc. — not actionable here
+  if (type === 'email.opened') {
+    const email = addr(payload.data?.to);
+    return email ? { kind: 'open', email } : null;
+  }
+  return null; // delivery events etc. — not actionable here
 }
 
 /**
