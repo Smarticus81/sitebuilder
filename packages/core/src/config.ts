@@ -1,4 +1,5 @@
 import { getConfigRow, upsertConfig, type DB } from '@storefront/db';
+import { effectiveDailyCap } from './deliverability.js';
 
 /** Resolved sender identity + pipeline policy. */
 export interface StorefrontConfig {
@@ -32,7 +33,8 @@ export async function loadConfig(
     mailingAddress: env.MAILING_ADDRESS ?? '',
     replyTo: env.REPLY_TO ?? '',
     fromDomain: env.FROM_DOMAIN ?? 'outreach.example.com',
-    dailySendCap: num(env.DAILY_SEND_CAP, 15),
+    // Warm-up ramp can only LOWER the configured cap, never raise it.
+    dailySendCap: effectiveDailyCap(num(env.DAILY_SEND_CAP, 15), env),
     followupDays: num(env.FOLLOWUP_DAYS, 4),
     demoTtlDays: num(env.DEMO_TTL_DAYS, 14),
     demoBaseDomain: env.DEMO_BASE_DOMAIN ?? 'demo.example.com',

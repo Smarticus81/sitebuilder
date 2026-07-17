@@ -256,6 +256,10 @@ async function run() {
     validateEnv({ ...process.env, FROM_DOMAIN: 'mydomain.com' }).warnings.some((w) => w.includes('subdomain')));
   check('adapter modes include the audit provider', 'audit' in adapterModes(ctx));
 
+  // ── 16. Phase E: auth, rate limiting, deliverability, warm-up ──────────────
+  section('Phase E — auth, rate limiting, warm-up cap, deliverability');
+  await testProductionHardening(ctx);
+
   // ── Summary ────────────────────────────────────────────────────────────────
   section('Result');
   if (failures === 0) {
@@ -690,6 +694,98 @@ async function testUnpublishAndReplies(ctx: Awaited<ReturnType<typeof createCont
     verifyResendSignature(secret, { id, timestamp: ts, signature: `v1,${sig}` }, body) &&
       !verifyResendSignature(secret, { id, timestamp: ts, signature: `v1,${sig}` }, body + 'x'),
   );
+}
+
+/**
+ * Production hardening: the REAL middleware stack (buildApp) on an ephemeral
+ * port with auth enabled; rate limiting; warm-up cap ramp; SPF/DKIM/DMARC
+ * evaluators; alerting fallback behavior.
+ */
+async function testProductionHardening(ctx: Awaited<ReturnType<typeof createContext>>) {
+  const { buildApp } = await import('./app.js');
+  const {
+    issueToken, verifyToken, effectiveDailyCap, evaluateSpf, evaluateDmarc, evaluateDkim, alertOperator,
+  } = await import('@storefront/core');
+
+  // Auth-enabled app instance on an ephemeral port.
+  const env = { ...process.env, DASHBOARD_PASSWORD: 'acceptance-secret-pw', API_RATE_LIMIT_PER_MINUTE: '40' };
+  const app = buildApp(ctx, env);
+  const server = app.listen(0);
+  await new Promise<void>((r) => server.once('listening', () => r()));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+
+  try {
+    const health = await fetch(`${base}/api/health`);
+    check('health endpoint stays public (deploy checks)', health.ok && ((await health.json()) as { auth: boolean }).auth === true);
+
+    const unauth = await fetch(`${base}/api/leads`);
+    check('API requires auth when a password is set', unauth.status === 401);
+    const unauthPost = await fetch(`${base}/api/leads/1/approve`, { method: 'POST' });
+    check('mutating endpoints reject unauthenticated calls', unauthPost.status === 401);
+
+    const badLogin = await fetch(`${base}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'wrong' }),
+    });
+    check('wrong password is rejected', badLogin.status === 401);
+
+    const login = await fetch(`${base}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'acceptance-secret-pw' }),
+    });
+    const { token } = (await login.json()) as { token: string };
+    check('correct password yields a session token', login.ok && !!token);
+
+    const authed = await fetch(`${base}/api/leads`, { headers: { Authorization: `Bearer ${token}` } });
+    check('token grants API access', authed.ok && Array.isArray(await authed.json()));
+
+    check('tampered tokens are rejected', !verifyToken(token.slice(0, -2) + 'xx', env));
+    check('expired tokens are rejected', !verifyToken(issueToken(env, Date.now() - 8 * 86_400_000), env));
+
+    const unsub = await fetch(`${base}/unsubscribe?email=x@y.z&token=bad`);
+    check('unsubscribe stays public (CAN-SPAM) — no auth wall', unsub.status === 400); // bad token ≠ 401
+
+    // Rate limiting: hammer past the per-minute budget.
+    let last = 200;
+    for (let i = 0; i < 45; i++) {
+      const r = await fetch(`${base}/api/health`);
+      last = r.status;
+    }
+    check('rate limiter returns 429 past the per-IP budget', last === 429);
+  } finally {
+    server.close();
+  }
+
+  // Warm-up-aware cap: can lower, never raise.
+  const rampEnv = { SEND_WARMUP_START: '2026-07-01', SEND_WARMUP_RAMP: '5,10,15,25' } as NodeJS.ProcessEnv;
+  check(
+    'warm-up ramp lowers the cap by week and never exceeds the configured cap',
+    effectiveDailyCap(15, rampEnv, new Date('2026-07-03')) === 5 &&
+      effectiveDailyCap(15, rampEnv, new Date('2026-07-10')) === 10 &&
+      effectiveDailyCap(15, rampEnv, new Date('2026-09-01')) === 15 && // min(25, 15) — never raised
+      effectiveDailyCap(15, {} as NodeJS.ProcessEnv) === 15,
+  );
+  check('before the warm-up start the most conservative cap applies',
+    effectiveDailyCap(15, rampEnv, new Date('2026-06-01')) === 5);
+
+  // Deliverability evaluators (offline, fixture records).
+  check(
+    'SPF evaluator: accepts v=spf1 ~all, rejects missing/loose records',
+    evaluateSpf(['v=spf1 include:resend.io ~all']).ok &&
+      !evaluateSpf([]).ok &&
+      !evaluateSpf(['v=spf1 include:resend.io ?all']).ok,
+  );
+  check(
+    'DMARC evaluator: requires v=DMARC1 with a policy',
+    evaluateDmarc(['v=DMARC1; p=quarantine; rua=mailto:d@x.y']).ok && !evaluateDmarc(['v=DMARC1;']).ok && !evaluateDmarc([]).ok,
+  );
+  check('DKIM evaluator: detects a published key', evaluateDkim(['v=DKIM1; k=rsa; p=MIGfMA0']).ok && !evaluateDkim([]).ok);
+
+  // Alerting: no webhook configured → clean no-op, never a throw.
+  check('alerting without ALERT_WEBHOOK_URL is a safe no-op', (await alertOperator('test', {} as NodeJS.ProcessEnv)) === false);
 }
 
 /**

@@ -4,7 +4,7 @@
 
 import './env.js';
 import { fetchWithRetry, redactUrl } from '@storefront/net';
-import { createContext, adapterModes, validateEnv } from '@storefront/core';
+import { createContext, adapterModes, validateEnv, checkDeliverabilityDns, authEnabled } from '@storefront/core';
 
 type PingResult = { ok: boolean; note: string };
 
@@ -149,7 +149,33 @@ async function main() {
     }
   }
 
-  // 3. Database.
+  // 3. Deliverability DNS (pre-send check): SPF / DKIM / DMARC on FROM_DOMAIN.
+  console.log('\n── Deliverability (DNS) ─────────────────────────────────────');
+  const fromDomain = env.FROM_DOMAIN?.trim() ?? '';
+  if (!fromDomain || fromDomain.includes('example.com')) {
+    console.log('  ◦ skipped — set a real FROM_DOMAIN to check SPF/DKIM/DMARC');
+  } else {
+    try {
+      const dns = await checkDeliverabilityDns(fromDomain);
+      for (const [name, c] of [['SPF', dns.spf], ['DKIM', dns.dkim], ['DMARC', dns.dmarc]] as const) {
+        console.log(`  ${c.ok ? '✓' : '✗'} ${name.padEnd(6)} ${c.note}`);
+        if (!c.ok) failures++;
+      }
+    } catch (err) {
+      console.log(`  ✗ DNS lookup failed: ${String(err).slice(0, 120)}`);
+      failures++;
+    }
+  }
+
+  // 4. Auth posture.
+  console.log('\n── Security ─────────────────────────────────────────────────');
+  console.log(
+    authEnabled(env)
+      ? '  ✓ dashboard/API auth enabled'
+      : '  ⚠ auth disabled — set DASHBOARD_PASSWORD (required in production)',
+  );
+
+  // 5. Database.
   console.log('\n── Database ─────────────────────────────────────────────────');
   try {
     await ctx.db.get('SELECT 1');

@@ -39,6 +39,8 @@ export function validateEnv(env: NodeJS.ProcessEnv = process.env): EnvReport {
   // Secrets hygiene.
   if (!env.UNSUBSCRIBE_SECRET?.trim())
     warnings.push('UNSUBSCRIBE_SECRET is unset — unsubscribe tokens use the built-in dev secret');
+  if (!env.DASHBOARD_PASSWORD?.trim())
+    warnings.push('DASHBOARD_PASSWORD is unset — dashboard/API auth is disabled (required in production)');
 
   if ((env.EMAIL_PROVIDER ?? 'mock') !== 'mock' && !env.EMAIL_PROVIDER_API_KEY?.trim())
     errors.push(`EMAIL_PROVIDER=${env.EMAIL_PROVIDER} but EMAIL_PROVIDER_API_KEY is unset`);

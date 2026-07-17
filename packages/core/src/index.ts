@@ -17,4 +17,7 @@ export * from './outreach-none.js';
 export * from './close.js';
 export * from './ab.js';
 export * from './analytics.js';
+export * from './auth.js';
+export * from './observability.js';
+export * from './deliverability.js';
 export * from './replies.js';

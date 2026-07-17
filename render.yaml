@@ -1,0 +1,31 @@
+# Render blueprint for the Storefront worker API.
+services:
+  - type: web
+    name: storefront-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WORKER_PORT
+        value: "8787"
+      - key: ENABLE_SCHEDULER
+        value: "1"
+      # Set in the Render dashboard (never commit values):
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: UNSUBSCRIBE_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SENDER_NAME
+        sync: false
+      - key: SENDER_BUSINESS
+        sync: false
+      - key: MAILING_ADDRESS
+        sync: false
+      - key: REPLY_TO
+        sync: false
+      - key: FROM_DOMAIN
+        sync: false

@@ -1,0 +1,27 @@
+# Fly.io config for the Storefront worker API.
+#   fly launch --no-deploy   (once)
+#   fly secrets set DASHBOARD_PASSWORD=... UNSUBSCRIBE_SECRET=... DATABASE_URL=postgres://...
+#   fly deploy
+app = "storefront-worker"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  WORKER_PORT = "8787"
+  ENABLE_SCHEDULER = "1"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false   # scheduler must keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  method = "GET"
+  path = "/api/health"
